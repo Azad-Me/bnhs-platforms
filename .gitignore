@@ -47,3 +47,7 @@ ehthumbs.db
 *.sln
 *.pyc
 *.swp
+*.sql
+*.mako
+__pycache__
+.venv
