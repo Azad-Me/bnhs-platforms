@@ -24,6 +24,7 @@ class User(Base):
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     email: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    google_sub: Mapped[str | None] = mapped_column(Text, unique=True)
     level: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=text("true")
@@ -32,7 +33,10 @@ class User(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     assignments: Mapped[list[Assignment]] = relationship(

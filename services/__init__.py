@@ -3,13 +3,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI, Request
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import FastAPI
 
-from common import DataBaseConnectionPool
-from common.db.config import DatabaseSettings
-
-app = FastAPI()
+from .common import DataBaseConnectionPool
+from .common.db.dependencies import get_db_session
+from .common.db.config import DatabaseSettings
+from .jbnhs.src.jbnhs.api import router as jbnhs_router
+from .user_management.router import router as user_management_router
+from .user_management.security import load_auth_settings
 
 
 def load_database_settings() -> DatabaseSettings:
@@ -27,6 +28,7 @@ async def check_database_connection(
 
 @asynccontextmanager
 async def postgres_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    load_auth_settings()
     pool = DataBaseConnectionPool(load_database_settings())
     app.state.db_pool = pool
     try:
@@ -40,13 +42,10 @@ async def postgres_lifespan(app: FastAPI) -> AsyncIterator[None]:
                 del app.state.db_pool
 
 
-async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
-    pool: DataBaseConnectionPool | None = getattr(app.state, "db_pool", None)
-    if pool is None:
-        raise RuntimeError("The Postgres pool is not initialized; check the app lifespan.")
+app = FastAPI(lifespan=postgres_lifespan)
 
-    async with pool.session() as session:
-        yield session
+app.include_router(user_management_router)
+app.include_router(jbnhs_router)
 
 
 __all__ = [

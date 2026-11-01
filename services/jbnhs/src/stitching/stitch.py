@@ -328,6 +328,20 @@ def create_searchable_pdf(
     return output_pdf
 
 
+def bbox_values(bbox):
+    """Accept either {x1,y1,x2,y2} or [x1,y1,x2,y2]."""
+    if isinstance(bbox, dict):
+        return (
+            float(bbox["x1"]),
+            float(bbox["y1"]),
+            float(bbox["x2"]),
+            float(bbox["y2"]),
+        )
+
+    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+        return tuple(float(v) for v in bbox)
+
+    raise ValueError(f"Unsupported bbox format: {bbox}")
 # --------------------------------------------------
 # 7. Command-line entry point
 # --------------------------------------------------

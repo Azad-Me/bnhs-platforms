@@ -1,20 +1,43 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from common import params
+from ..env import load_environment
+
+
+def _environment_value(name: str, default: str) -> str:
+    return load_environment().get(name, default)
 
 
 @dataclass(frozen=True)
 class DatabaseSettings:
-    host: str = params.get("DB_HOST", "localhost")
-    port: int = int(params.get("DB_PORT", "5432"))
-    username: str = params.get("DB_USERNAME", "postgres")
-    password: str = params.get("DB_PASSWORD", "12345")
-    database: str = params.get("DB_NAME", "journal_qc")
-    min_size: int = int(params.get("DB_POOL_MIN_SIZE", "5"))
-    max_size: int = int(params.get("DB_POOL_MAX_SIZE", "20"))
-    max_overflow: int = int(params.get("DB_POOL_MAX_OVERFLOW", "10"))
-    pool_timeout: float = float(params.get("DB_POOL_TIMEOUT", "30"))
-    echo: bool = params.get("DB_ECHO", "false").lower() == "true"
+    host: str = field(default_factory=lambda: _environment_value("DB_HOST", "localhost"))
+    port: int = field(
+        default_factory=lambda: int(_environment_value("DB_PORT", "5432"))
+    )
+    username: str = field(
+        default_factory=lambda: _environment_value("DB_USERNAME", "postgres")
+    )
+    password: str = field(
+        default_factory=lambda: _environment_value("DB_PASSWORD", "12345")
+    )
+    database: str = field(
+        default_factory=lambda: _environment_value("DB_NAME", "journal_qc")
+    )
+    min_size: int = field(
+        default_factory=lambda: int(_environment_value("DB_POOL_MIN_SIZE", "5"))
+    )
+    max_size: int = field(
+        default_factory=lambda: int(_environment_value("DB_POOL_MAX_SIZE", "20"))
+    )
+    max_overflow: int = field(
+        default_factory=lambda: int(_environment_value("DB_POOL_MAX_OVERFLOW", "10"))
+    )
+    pool_timeout: float = field(
+        default_factory=lambda: float(_environment_value("DB_POOL_TIMEOUT", "30"))
+    )
+    echo: bool = field(
+        default_factory=lambda: _environment_value("DB_ECHO", "false").lower()
+        == "true"
+    )
 
     @property
     def async_url(self) -> str:

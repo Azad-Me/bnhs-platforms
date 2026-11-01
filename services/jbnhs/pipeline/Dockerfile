@@ -3,6 +3,10 @@ WORKDIR /app
 
 COPY . /app
 
-RUN apt-get -qq update & apt-get -qq install -y tesseract-ocr
-RUN apt-get -qq install -y fonts-dejavu-core & fc-match DejaVuSans
-RUN fc-match DejaVuSans
+RUN apt-get -qq update \
+    && apt-get -qq install -y --no-install-recommends tesseract-ocr fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir \
+    -r requirements.txt \
+    -r services/jbnhs/pipeline/requirements.txt

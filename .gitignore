@@ -48,6 +48,9 @@ ehthumbs.db
 *.pyc
 *.swp
 *.sql
+!schema.sql
 *.mako
 __pycache__
 .venv
+*.pdf
+*.sql
