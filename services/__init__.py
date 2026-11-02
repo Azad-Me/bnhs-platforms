@@ -10,9 +10,9 @@ from .common import DataBaseConnectionPool
 from .common.db.dependencies import get_db_session
 from .common.db.config import DatabaseSettings
 from .common.env import load_environment
-from .jbnhs.src.jbnhs.api import router as jbnhs_router
-from .user_management.router import router as user_management_router
-from .user_management.security import load_auth_settings
+from .jbnhs.src.catalog.api import router as jbnhs_router
+from .user_mgmt.router import router as user_management_router
+from .user_mgmt.security import load_auth_settings
 
 
 def load_database_settings() -> DatabaseSettings:
