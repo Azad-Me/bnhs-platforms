@@ -25,6 +25,7 @@ async def list_volumes_with_issues(
             Volume.created_at.label("volume_created_at"),
             Issue.id.label("issue_id"),
             Issue.issue_code,
+            Issue.issue_s3_key,
             Issue.manifest_s3_key,
             func.count(Page.id).label("page_count"),
         )
@@ -36,6 +37,7 @@ async def list_volumes_with_issues(
             Volume.created_at,
             Issue.id,
             Issue.issue_code,
+            Issue.issue_s3_key,
             Issue.manifest_s3_key,
         )
         .order_by(Volume.volume_code, Issue.issue_code)
@@ -57,6 +59,7 @@ async def list_volumes_with_issues(
                 IssueSummary(
                     id=row.issue_id,
                     issue_code=row.issue_code,
+                    issue_s3_key=row.issue_s3_key,
                     manifest_s3_key=row.manifest_s3_key,
                     page_count=row.page_count,
                 )
@@ -112,18 +115,25 @@ async def list_volume_issues(
         select(
             Issue.id.label("issue_id"),
             Issue.issue_code,
+            Issue.issue_s3_key,
             Issue.manifest_s3_key,
             func.count(Page.id).label("page_count"),
         )
         .outerjoin(Page, Page.issue_id == Issue.id)
         .where(Issue.volume_id == volume_id)
-        .group_by(Issue.id, Issue.issue_code, Issue.manifest_s3_key)
+        .group_by(
+            Issue.id,
+            Issue.issue_code,
+            Issue.issue_s3_key,
+            Issue.manifest_s3_key,
+        )
         .order_by(Issue.issue_code)
     )
     return [
         IssueSummary(
             id=row.issue_id,
             issue_code=row.issue_code,
+            issue_s3_key=row.issue_s3_key,
             manifest_s3_key=row.manifest_s3_key,
             page_count=row.page_count,
         )

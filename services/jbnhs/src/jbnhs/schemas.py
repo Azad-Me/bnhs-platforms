@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 class IssueSummary(BaseModel):
     id: int
     issue_code: str
+    issue_s3_key: str | None
     manifest_s3_key: str | None
     page_count: int
 
@@ -29,8 +30,7 @@ class PageRead(BaseModel):
     width: int | None
     height: int | None
     dpi: int | None
-    master_pdf_s3_key: str | None
-    toned_pdf_s3_key: str | None
+    image_s3_key: str | None
     ocr_s3_key: str | None
     status: str
     is_check_page: bool

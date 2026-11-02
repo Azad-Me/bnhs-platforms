@@ -90,6 +90,15 @@ def issue_manifest_s3_key(volume_code: str, issue_code: str) -> str:
     return f"ocr/tesseract/{volume_code}/{issue_code}/manifest.json"
 
 
+def page_image_s3_key(volume_code: str, issue_code: str, page_number: int) -> str:
+    if page_number < 1:
+        raise ValueError("Page numbers must start at 1.")
+    return (
+        f"issues/{volume_code.lower()}/{issue_code.lower()}/"
+        f"p{page_number}.jpeg"
+    )
+
+
 def build_page_ocr_document(
     *,
     page_number: int,
@@ -186,7 +195,6 @@ async def _save_issue_metadata(
     *,
     bucket: str,
     master_pdf_s3_key: str,
-    toned_pdf_s3_key: str | None,
     volume_code: str,
     issue_code: str,
     manifest_s3_key: str,
@@ -216,11 +224,13 @@ async def _save_issue_metadata(
     issue = issue_matches[0] if issue_matches else Issue(
         volume_id=volume.id,
         issue_code=issue_code,
+        issue_s3_key=master_pdf_s3_key,
     )
     if not issue_matches:
         session.add(issue)
         await session.flush()
 
+    issue.issue_s3_key = master_pdf_s3_key
     issue.manifest_s3_key = manifest_s3_key
     existing_pages = (
         await session.scalars(select(Page).where(Page.issue_id == issue.id))
@@ -234,17 +244,14 @@ async def _save_issue_metadata(
             page = Page(
                 issue_id=issue.id,
                 page_number=page_number,
-                source_file=f"s3://{bucket}/{master_pdf_s3_key}",
+                page_source_file=entry["image_s3_key"],
                 status="queued",
             )
             session.add(page)
 
-        page.source_file = f"s3://{bucket}/{master_pdf_s3_key}"
         page.width = entry["width"]
         page.height = entry["height"]
         page.dpi = entry["dpi"]
-        page.master_pdf_s3_key = master_pdf_s3_key
-        page.toned_pdf_s3_key = toned_pdf_s3_key
         page.ocr_s3_key = entry["ocr_s3_key"]
 
 
@@ -274,17 +281,6 @@ async def ingest_local_pdf(
 
     volume_code, issue_code = parse_master_pdf_key(master_pdf_s3_key)
     manifest_key = issue_manifest_s3_key(volume_code, issue_code)
-    toned_pdf_key = f"derived/pdf-toned/{volume_code}/{issue_code}/{issue_code}_toned.pdf"
-    from botocore.exceptions import ClientError
-
-    try:
-        s3_client.head_object(Bucket=bucket, Key=toned_pdf_key)
-    except ClientError as error:
-        error_code = error.response.get("Error", {}).get("Code")
-        status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        if status_code != 404 and error_code not in {"404", "NoSuchKey", "NotFound"}:
-            raise
-        toned_pdf_key = None
 
     source_file = PurePosixPath(master_pdf_s3_key).name
     page_entries: list[dict[str, Any]] = []
@@ -316,6 +312,28 @@ async def ingest_local_pdf(
                 )
 
             height, width = image.shape[:2]
+            image_key = page_image_s3_key(
+                volume_code,
+                issue_code,
+                page_number,
+            )
+            encoded_successfully, jpeg_bytes = cv2.imencode(
+                ".jpeg",
+                image,
+                [cv2.IMWRITE_JPEG_QUALITY, 90],
+            )
+            if not encoded_successfully:
+                raise RuntimeError(
+                    f"Unable to encode page {page_number} as JPEG "
+                    f"from {master_pdf_s3_key}."
+                )
+            s3_client.put_object(
+                Bucket=bucket,
+                Key=image_key,
+                Body=jpeg_bytes.tobytes(),
+                ContentType="image/jpeg",
+            )
+
             lines = _extract_ocr_lines(image, language=language, psm=psm)
             page_document = build_page_ocr_document(
                 page_number=page_number,
@@ -346,6 +364,7 @@ async def ingest_local_pdf(
                     "width": width,
                     "height": height,
                     "dpi": dpi,
+                    "image_s3_key": image_key,
                     "ocr_s3_key": page_key,
                 }
             )
@@ -378,7 +397,6 @@ async def ingest_local_pdf(
                 session,
                 bucket=bucket,
                 master_pdf_s3_key=master_pdf_s3_key,
-                toned_pdf_s3_key=toned_pdf_key,
                 volume_code=volume_code,
                 issue_code=issue_code,
                 manifest_s3_key=manifest_key,

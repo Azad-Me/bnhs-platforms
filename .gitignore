@@ -54,3 +54,5 @@ __pycache__
 .venv
 *.pdf
 *.sql
+*.html
+garbage

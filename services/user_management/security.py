@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import logging
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -10,6 +10,7 @@ from google.oauth2 import id_token
 import jwt
 
 from ..common.env import load_environment
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,7 @@ def _verify_google_credential(credential: str) -> GoogleIdentity:
     email = claims.get("email")
     email_verified = claims.get("email_verified")
     name = claims.get("name", "")
+    logger.info(f"everything is fine, {subject}")
     if (
         not isinstance(subject, str)
         or not subject

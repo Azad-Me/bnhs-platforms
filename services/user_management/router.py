@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -29,6 +31,7 @@ from .service import (
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["user management"])
 _bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -67,7 +70,7 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-@router.post("/auth/google", response_model=TokenResponse)
+@router.post("/auth/login", response_model=TokenResponse)
 async def login(
     payload: GoogleSignInRequest,
     session: AsyncSession = Depends(get_db_session),
@@ -75,15 +78,20 @@ async def login(
     try:
         identity = await verify_google_credential(payload.credential)
     except InvalidGoogleCredential as error:
+        logger.warning("Google sign-in rejected: invalid credential")
         raise _authentication_required() from error
     try:
         user = await user_management_service.authenticate_google_identity(
             session, identity
         )
     except (UserNotFoundError, GoogleIdentityConflictError) as error:
+        logger.warning(
+            "Google sign-in rejected: account is not provisioned or is already linked"
+        )
         raise _authentication_required() from error
-
+    
     access_token, expires_in = create_access_token(user.id)
+    logger.info("Google sign-in succeeded for user_id=%s", user.id)
     return TokenResponse(access_token=access_token, expires_in=expires_in)
 
 
@@ -188,4 +196,3 @@ async def deactivate_user(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(error),
         ) from error
-

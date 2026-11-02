@@ -52,12 +52,10 @@ class Page(Base):
         BigInteger, ForeignKey("issues.id"), nullable=False, index=True
     )
     page_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_file: Mapped[str] = mapped_column(Text, nullable=False)
+    page_source_file: Mapped[str] = mapped_column(Text, nullable=False)
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
     dpi: Mapped[int | None] = mapped_column(Integer)
-    master_pdf_s3_key: Mapped[str | None] = mapped_column(Text)
-    toned_pdf_s3_key: Mapped[str | None] = mapped_column(Text)
     ocr_s3_key: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     is_check_page: Mapped[bool] = mapped_column(

@@ -14,4 +14,18 @@ Their router and response schemas live in the service-specific
   number. A nonexistent issue returns `404`.
 
 The page response includes page dimensions, QC status, and the source/OCR S3
-keys for use by the QC client.
+keys for use by the QC client. Each issue summary includes its source PDF S3 key.
+
+## API container
+
+Build the API image from the repository root and pass environment settings at
+runtime; `.env` is intentionally excluded from the image:
+
+```powershell
+docker build -t bnhs-api .
+docker run --rm --env-file .env -p 8000:8000 bnhs-api
+```
+
+Set `CORS_ALLOWED_ORIGINS` to a comma-separated list of exact frontend origins
+(for example, `http://localhost:3000,http://localhost:5173`). Wildcard origins
+are rejected; bearer-token requests do not use cookie credentials.

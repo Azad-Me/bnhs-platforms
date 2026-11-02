@@ -1,8 +1,8 @@
 # JBNHS master-PDF ingestion
 
 This pipeline lists every canonical master PDF under `derived/pdf/` in S3,
-downloads each issue PDF in turn, renders its pages, runs Tesseract, writes
-guide-format OCR JSON to S3, and upserts the page and issue manifest paths in
+downloads each issue PDF in turn, renders its pages, uploads page JPEGs and
+guide-format OCR JSON, and upserts their S3 paths and issue manifest in
 PostgreSQL. S3 listing uses pagination so the pipeline can process buckets with
 more than one page of results.
 
@@ -15,17 +15,19 @@ derived/pdf/V1/i1/i1.pdf
 For that example the pipeline writes:
 
 ```text
+issues/v1/i1/p1.jpeg
+issues/v1/i1/p2.jpeg
 ocr/tesseract/V1/i1/p0001.json
 ocr/tesseract/V1/i1/p0002.json
 ocr/tesseract/V1/i1/manifest.json
 ```
 
-The `pages` rows store the original master-PDF key, per-page dimensions and DPI,
-the exact OCR JSON key, and the S3 URI of the source PDF; `page_number` selects
-the individual page. The `issues` row stores the manifest key. PDF page images
-are rendered locally for OCR; the original S3 PDF is not changed. New pages
-enter the `queued` status. Reprocessing an issue updates its source metadata and
-OCR keys without resetting existing QC statuses.
+The `issues` row stores the original master-PDF key and manifest key. Each
+`pages` row stores the rendered JPEG key, OCR JSON key, and page dimensions;
+`page_number` selects the individual page. Images are JPEG-encoded at quality
+90 and uploaded as `image/jpeg`. The original S3 PDF is not changed. New pages
+enter the `queued` status. Reprocessing an issue overwrites the same JPEG/OCR
+keys without resetting existing QC statuses.
 
 Install dependencies and the Tesseract executable:
 
@@ -34,11 +36,28 @@ python -m pip install -r requirements.txt
 python -m pip install -r services/jbnhs/pipeline/requirements.txt
 ```
 
+On Windows, if Tesseract is installed outside `PATH`, set `TESSERACT_CMD` to
+the full path to `tesseract.exe` (for example,
+`C:\Program Files\Tesseract-OCR\tesseract.exe`). The Python pipeline uses this
+setting when invoking Tesseract.
+
 The pipeline Dockerfile installs Tesseract and the Python dependencies. Configure
 AWS credentials using the standard AWS credential chain (prefer an IAM role),
 and set `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, and `DB_NAME`.
 `S3_BUCKET` defaults to `bnhs-jbnhs-archive`; the region defaults to
 `ap-south-1`.
+
+Build the dedicated pipeline image from the repository root (the build context
+must be the repository root so both dependency files and the `services` package
+are available):
+
+```powershell
+docker build -f services/jbnhs/pipeline/Dockerfile -t bnhs-jbnhs-pipeline .
+docker run --rm --env-file .env bnhs-jbnhs-pipeline
+```
+
+The `.env` file is not copied into the image. Provide AWS credentials to the
+container through an IAM role or another secure AWS credential-chain method.
 
 Run from the repository root; no per-issue command-line arguments are needed:
 

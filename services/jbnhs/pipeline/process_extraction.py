@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -18,6 +19,9 @@ from pytesseract import Output
 # --------------------------------------------------
 
 DEFAULT_CONFIDENCE_THRESHOLD = 0.60
+TESSERACT_CMD = os.environ.get("TESSERACT_CMD")
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
 # --------------------------------------------------

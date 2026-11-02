@@ -87,38 +87,11 @@ class UserManagementService:
     ) -> User:
         user = await session.scalar(
             select(User)
-            .where(User.google_sub == identity.subject)
+            .where(User.email == identity.email)
             .with_for_update()
         )
-        if user is None:
-            user = await session.scalar(
-                select(User)
-                .where(func.lower(User.email) == identity.email)
-                .with_for_update()
-            )
-            if user is None or (
-                user.google_sub is not None
-                and user.google_sub != identity.subject
-            ):
-                raise UserNotFoundError(identity.email)
-            if not user.is_active:
-                raise UserNotFoundError(identity.email)
-
-            user.google_sub = identity.subject
-            try:
-                await session.flush()
-            except IntegrityError as error:
-                original = error.orig
-                diagnostic = getattr(original, "diag", None)
-                constraint_name = getattr(
-                    diagnostic, "constraint_name", None
-                ) or getattr(original, "constraint_name", None)
-                if constraint_name == "users_google_sub_key":
-                    raise GoogleIdentityConflictError(
-                        "This Google account is already linked."
-                    ) from error
-                raise
-        elif not user.is_active:
+        
+        if not user or (user and not user.is_active):
             raise UserNotFoundError(identity.email)
         return user
 

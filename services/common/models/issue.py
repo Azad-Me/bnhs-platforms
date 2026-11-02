@@ -24,6 +24,7 @@ class Issue(Base):
     )
     issue_code: Mapped[str] = mapped_column(Text, nullable=False)
     manifest_s3_key: Mapped[str | None] = mapped_column(Text)
+    issue_s3_key: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
