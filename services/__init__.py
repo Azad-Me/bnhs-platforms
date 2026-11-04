@@ -6,13 +6,14 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .common import DataBaseConnectionPool
-from .common.db.dependencies import get_db_session
-from .common.db.config import DatabaseSettings
-from .common.env import load_environment
-from .jbnhs.src.catalog.api import router as jbnhs_router
-from .user_management.router import router as user_management_router
-from .user_management.security import load_auth_settings
+from services.common import DataBaseConnectionPool
+from services.common.db.dependencies import get_db_session
+from services.common.db.config import DatabaseSettings
+from services.common import params
+from services.common.responses import register_api_exception_handlers
+from services.jbnhs import router as jbnhs_router
+from services.user_management import router as user_management_router
+from services.user_management.security import load_auth_settings
 
 
 def load_database_settings() -> DatabaseSettings:
@@ -45,20 +46,16 @@ async def postgres_lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 _cors_origins = [
-    origin.strip()
-    for origin in load_environment()
-    .get(
-        "CORS_ALLOWED_ORIGINS",
-        "http://localhost:3000,http://localhost:5173,"
-        "http://localhost:5500,http://127.0.0.1:5500",
-    )
-    .split(",")
-    if origin.strip()
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
 ]
 if "*" in _cors_origins:
     raise ValueError("CORS_ALLOWED_ORIGINS must not contain a wildcard origin.")
 
 app = FastAPI(lifespan=postgres_lifespan)
+register_api_exception_handlers(app)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,

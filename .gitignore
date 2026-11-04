@@ -57,3 +57,9 @@ __pycache__
 *.html
 garbage
 test_*.py
+tests
+tests/*
+!tests/
+!tests/**/
+!tests/*.py
+!tests/**/*.py

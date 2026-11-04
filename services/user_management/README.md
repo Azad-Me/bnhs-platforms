@@ -4,9 +4,16 @@ The only sign-in option is Google Sign-In. The client sends its Google ID
 credential to the API, which verifies the signature, audience, issuer, and
 verified email before issuing a short-lived JWT bearer token for subsequent API
 requests. Google login is limited to active users already provisioned by an
-administrator; public registration is disabled. Existing free-form
-`users.level` values are preserved; only a case-insensitive `admin` value
-grants management access.
+administrator; public registration is disabled. Supported access levels are
+defined by `AccessLevel` in `services/common/constant/access_level_enum.py`:
+
+- `admin` — manage provisioned users and access the authenticated catalog.
+- `reviewer` — access the authenticated catalog; user management is forbidden.
+
+The user-management API accepts only these access levels when creating or
+updating a user. Access checks use the user's current database level, so
+changes to a user's level take effect immediately without waiting for a token
+to expire.
 
 ## Configuration
 
@@ -37,7 +44,13 @@ Bootstrap values are read from the environment, never command-line arguments.
 
 ## API
 
-- `POST /api/auth/google` — exchange `{ "credential": "<Google ID token>" }`
+Successful API responses use the common envelope
+`{"code": 1, "message": "Success", "data": ...}`. Errors use
+`{"code": -1, "message": "Failed", "data": null}`; validation failures also
+include an `errors` array with field locations and messages. HTTP status codes
+are preserved. The `data` value uses the endpoint's resource-specific schema.
+
+- `POST /api/auth/login` — exchange `{ "credential": "<Google ID token>" }`
   for a bearer token.
 - `GET /api/auth/me` — return the authenticated user's profile.
 - `GET /api/users` — list users; supports `include_inactive`, `offset`, `limit`.

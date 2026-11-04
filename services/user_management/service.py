@@ -4,6 +4,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..common.constant.access_level_enum import AccessLevel
 from ..common.models import User
 from .schemas import UserCreate, UserUpdate
 from .security import GoogleIdentity
@@ -35,10 +36,20 @@ def _is_email_unique_violation(error: IntegrityError) -> bool:
 
 
 def _is_admin(user: User) -> bool:
-    return user.level.strip().casefold() == "admin"
+    return user.level.strip().casefold() == AccessLevel.ADMIN.value
 
 
 class UserManagementService:
+    async def get_active_user(
+        self,
+        session: AsyncSession,
+        user_id: int,
+    ) -> User | None:
+        user = await session.get(User, user_id)
+        if user is None or not user.is_active:
+            return None
+        return user
+
     async def list_users(
         self,
         session: AsyncSession,
@@ -64,7 +75,7 @@ class UserManagementService:
         user = User(
             name=payload.name,
             email=str(payload.email),
-            level=payload.level,
+            level=payload.level.value,
         )
         try:
             existing = await session.scalar(
@@ -102,6 +113,8 @@ class UserManagementService:
         payload: UserUpdate,
     ) -> User:
         changes = payload.model_dump(exclude_unset=True)
+        if "level" in changes:
+            changes["level"] = changes["level"].value
         if "is_active" in changes or "level" in changes:
             await self._lock_admin_changes(session)
         try:
@@ -121,7 +134,7 @@ class UserManagementService:
                 changes.get("is_active") is False
                 or (
                     changes.get("level") is not None
-                    and changes["level"].casefold() != "admin"
+                    and changes["level"] != AccessLevel.ADMIN.value
                 )
             ):
                 await self._ensure_another_active_admin(session)
@@ -154,7 +167,9 @@ class UserManagementService:
         await self._lock_admin_changes(session)
         existing_admin = await session.scalar(
             select(User.id)
-            .where(func.lower(func.trim(User.level)) == "admin")
+            .where(
+                func.lower(func.trim(User.level)) == AccessLevel.ADMIN.value
+            )
             .limit(1)
         )
         if existing_admin is not None:
@@ -170,7 +185,7 @@ class UserManagementService:
         user = User(
             name=name,
             email=email,
-            level="admin",
+            level=AccessLevel.ADMIN.value,
         )
         session.add(user)
         try:
@@ -197,7 +212,7 @@ class UserManagementService:
             select(User)
             .where(
                 User.is_active.is_(True),
-                func.lower(func.trim(User.level)) == "admin",
+                func.lower(func.trim(User.level)) == AccessLevel.ADMIN.value,
             )
             .with_for_update()
         )
@@ -210,4 +225,3 @@ class UserManagementService:
         await session.execute(text("SELECT pg_advisory_xact_lock(827364921)"))
 
 
-user_management_service = UserManagementService()

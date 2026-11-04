@@ -26,12 +26,6 @@ class PageRead(BaseModel):
     id: int
     issue_id: int
     page_number: int
-    source_file: str
-    width: int | None
-    height: int | None
-    dpi: int | None
-    image_s3_key: str | None
-    ocr_s3_key: str | None
     status: str
     is_check_page: bool
     current_approved_revision_id: int | None

@@ -1,8 +1,10 @@
 # JBNHS catalog API
 
 These read-only endpoints require a valid bearer token from Google Sign-In.
-Their router and response schemas live in the service-specific
-`src/jbnhs/` package.
+The catalog uses three layers under `src/catalog/`: `api.py` handles HTTP,
+authentication, and response envelopes; `schemas.py` defines API data models;
+and `service.py` owns database queries and result assembly. ORM entities remain
+in `services/common/models/`.
 
 - `GET /api/volumes` returns volumes with their issues and each issue's page
   count. Volumes are included even when they have no issues.

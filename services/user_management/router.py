@@ -7,8 +7,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..common.constant.access_level_enum import AccessLevel
 from ..common.db.dependencies import get_db_session
 from ..common.models import User
+from ..common.responses import (
+    API_ERROR_RESPONSES,
+    ApiExceptionRule,
+    ApiResponse,
+    handle_api_exceptions,
+)
 from .schemas import (
     GoogleSignInRequest,
     TokenResponse,
@@ -27,13 +34,22 @@ from .service import (
     LastActiveAdminError,
     UserEmailConflictError,
     UserNotFoundError,
-    user_management_service,
+    UserManagementService
 )
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api", tags=["user management"])
+router = APIRouter(
+    prefix="/api",
+    tags=["user management"],
+    responses=API_ERROR_RESPONSES,
+)
 _bearer_scheme = HTTPBearer(auto_error=False)
+_LOGIN_ERROR_RULE = ApiExceptionRule(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Authentication is required.",
+    log_message="Google sign-in rejected",
+)
 
 
 def _authentication_required() -> HTTPException:
@@ -47,6 +63,7 @@ def _authentication_required() -> HTTPException:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     session: AsyncSession = Depends(get_db_session),
+    user_management_service = UserManagementService(),
 ) -> User:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _authentication_required()
@@ -55,14 +72,14 @@ async def get_current_user(
     except jwt.InvalidTokenError as error:
         raise _authentication_required() from error
 
-    user = await session.get(User, user_id)
-    if user is None or not user.is_active:
+    user = await user_management_service.get_active_user(session, user_id)
+    if user is None:
         raise _authentication_required()
     return user
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.level.strip().casefold() != "admin":
+    if user.level.strip().casefold() != AccessLevel.ADMIN.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access is required.",
@@ -70,129 +87,155 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-@router.post("/auth/login", response_model=TokenResponse)
+@router.post(
+    "/auth/login",
+    response_model=ApiResponse[TokenResponse],
+)
+@handle_api_exceptions(
+    {
+        InvalidGoogleCredential: _LOGIN_ERROR_RULE,
+        UserNotFoundError: _LOGIN_ERROR_RULE,
+        GoogleIdentityConflictError: _LOGIN_ERROR_RULE,
+    }
+)
 async def login(
     payload: GoogleSignInRequest,
     session: AsyncSession = Depends(get_db_session),
-) -> TokenResponse:
-    try:
-        identity = await verify_google_credential(payload.credential)
-    except InvalidGoogleCredential as error:
-        logger.warning("Google sign-in rejected: invalid credential")
-        raise _authentication_required() from error
-    try:
-        user = await user_management_service.authenticate_google_identity(
-            session, identity
-        )
-    except (UserNotFoundError, GoogleIdentityConflictError) as error:
-        logger.warning(
-            "Google sign-in rejected: account is not provisioned or is already linked"
-        )
-        raise _authentication_required() from error
-    
+    user_management_service = UserManagementService(),
+) -> ApiResponse[TokenResponse]:
+    identity = await verify_google_credential(payload.credential)
+    user = await user_management_service.authenticate_google_identity(
+        session, identity
+    )
+
     access_token, expires_in = create_access_token(user.id)
     logger.info("Google sign-in succeeded for user_id=%s", user.id)
-    return TokenResponse(access_token=access_token, expires_in=expires_in)
+    return ApiResponse.success(
+        TokenResponse(access_token=access_token, expires_in=expires_in)
+    )
 
 
-@router.get("/auth/me", response_model=UserRead)
+@router.get("/auth/me", response_model=ApiResponse[UserRead])
 async def read_current_user(
     user: User = Depends(get_current_user),
-) -> User:
-    return user
+) -> ApiResponse[UserRead]:
+    return ApiResponse.success(UserRead.model_validate(user))
 
 
-@router.get("/users", response_model=list[UserRead])
+@router.get("/users", response_model=ApiResponse[list[UserRead]])
 async def list_users(
     include_inactive: bool = False,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
+    user_management_service = UserManagementService(),
     _: User = Depends(require_admin),
-) -> list[User]:
-    return await user_management_service.list_users(
+) -> ApiResponse[list[UserRead]]:
+    users = await user_management_service.list_users(
         session,
         include_inactive=include_inactive,
         offset=offset,
         limit=limit,
     )
+    return ApiResponse.success(
+        [UserRead.model_validate(user) for user in users]
+    )
 
 
 @router.post(
     "/users",
-    response_model=UserRead,
+    response_model=ApiResponse[UserRead],
     status_code=status.HTTP_201_CREATED,
+)
+@handle_api_exceptions(
+    {
+        UserEmailConflictError: ApiExceptionRule(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A user with this email already exists.",
+        )
+    }
 )
 async def create_user(
     payload: UserCreate,
     session: AsyncSession = Depends(get_db_session),
+    user_management_service = UserManagementService(),
     _: User = Depends(require_admin),
-) -> User:
-    try:
-        return await user_management_service.create_user(session, payload)
-    except UserEmailConflictError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A user with this email already exists.",
-        ) from error
+) -> ApiResponse[UserRead]:
+    user = await user_management_service.create_user(session, payload)
+    return ApiResponse.success(UserRead.model_validate(user))
 
 
-@router.get("/users/{user_id}", response_model=UserRead)
+@router.get("/users/{user_id}", response_model=ApiResponse[UserRead])
+@handle_api_exceptions(
+    {
+        UserNotFoundError: ApiExceptionRule(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+    }
+)
 async def read_user(
     user_id: int,
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin),
-) -> User:
-    try:
-        return await user_management_service.get_user(session, user_id)
-    except UserNotFoundError as error:
-        raise HTTPException(
+    user_management_service = UserManagementService(),
+) -> ApiResponse[UserRead]:
+    user = await user_management_service.get_user(session, user_id)
+    return ApiResponse.success(UserRead.model_validate(user))
+
+
+@router.patch(
+    "/users/{user_id}",
+    response_model=ApiResponse[UserRead],
+)
+@handle_api_exceptions(
+    {
+        UserNotFoundError: ApiExceptionRule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found.",
-        ) from error
-
-
-@router.patch("/users/{user_id}", response_model=UserRead)
+        ),
+        UserEmailConflictError: ApiExceptionRule(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A user with this email already exists.",
+        ),
+        LastActiveAdminError: ApiExceptionRule(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=lambda error: str(error),
+        ),
+    }
+)
 async def update_user(
     user_id: int,
     payload: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
+    user_management_service = UserManagementService(),
     _: User = Depends(require_admin),
-) -> User:
-    try:
-        return await user_management_service.update_user(session, user_id, payload)
-    except UserNotFoundError as error:
-        raise HTTPException(
+) -> ApiResponse[UserRead]:
+    user = await user_management_service.update_user(session, user_id, payload)
+    return ApiResponse.success(UserRead.model_validate(user))
+
+
+@router.delete(
+    "/users/{user_id}",
+    response_model=ApiResponse[dict[str, str]],
+)
+@handle_api_exceptions(
+    {
+        UserNotFoundError: ApiExceptionRule(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found.",
-        ) from error
-    except UserEmailConflictError as error:
-        raise HTTPException(
+        ),
+        LastActiveAdminError: ApiExceptionRule(
             status_code=status.HTTP_409_CONFLICT,
-            detail="A user with this email already exists.",
-        ) from error
-    except LastActiveAdminError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(error),
-        ) from error
-
-
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+            detail=lambda error: str(error),
+        ),
+    }
+)
 async def deactivate_user(
     user_id: int,
     session: AsyncSession = Depends(get_db_session),
+    user_management_service = UserManagementService(),
     _: User = Depends(require_admin),
-) -> None:
-    try:
-        await user_management_service.deactivate_user(session, user_id)
-    except UserNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found.",
-        ) from error
-    except LastActiveAdminError as error:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(error),
-        ) from error
+) -> ApiResponse[dict[str, str]]:
+    await user_management_service.deactivate_user(session, user_id)
+    return ApiResponse.success({})
