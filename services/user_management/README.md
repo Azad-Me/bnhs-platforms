@@ -4,16 +4,19 @@ The only sign-in option is Google Sign-In. The client sends its Google ID
 credential to the API, which verifies the signature, audience, issuer, and
 verified email before issuing a short-lived JWT bearer token for subsequent API
 requests. Google login is limited to active users already provisioned by an
-administrator; public registration is disabled. Supported access levels are
-defined by `AccessLevel` in `services/common/constant/access_level_enum.py`:
+administrator; public registration is disabled. Access roles are stored in the
+database as a fixed catalog. `AccessLevel` defines the supported roles and
+the application enforces access through role-specific API dependencies.
 
-- `admin` — manage provisioned users and access the authenticated catalog.
-- `reviewer` — access the authenticated catalog; user management is forbidden.
+The fixed role catalog contains:
 
-The user-management API accepts only these access levels when creating or
-updating a user. Access checks use the user's current database level, so
-changes to a user's level take effect immediately without waiting for a token
-to expire.
+- `admin` — manage provisioned users.
+- `qc_user` — QC user workflows.
+- `publisher` — reviewer/publisher workflows.
+
+User records keep the selected role key in `level`; user create/update
+validates that it references one of the fixed roles. Role keys and access
+rules are changed in code and migrations, not through runtime role CRUD APIs.
 
 ## Configuration
 
@@ -53,13 +56,15 @@ are preserved. The `data` value uses the endpoint's resource-specific schema.
 - `POST /api/auth/login` — exchange `{ "credential": "<Google ID token>" }`
   for a bearer token.
 - `GET /api/auth/me` — return the authenticated user's profile.
+- `GET /api/roles` — list the fixed roles available for assigning users.
 - `GET /api/users` — list users; supports `include_inactive`, `offset`, `limit`.
 - `POST /api/users` — provision an account with name, email, and level.
 - `GET /api/users/{id}` — retrieve a user.
 - `PATCH /api/users/{id}` — update profile fields or active state.
 - `DELETE /api/users/{id}` — deactivate an account without deleting history.
 
-All `/api/users` routes require an active administrator bearer token. Login
+All `/api/users` and `/api/roles` routes require an active administrator
+bearer token. Login
 rejects invalid Google credentials, unverified emails, inactive users, and
 Google accounts whose verified email is not provisioned. The first successful
 sign-in links the user's immutable Google subject to the account; subsequent

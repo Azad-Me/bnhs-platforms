@@ -195,6 +195,7 @@ async def _save_issue_metadata(
     *,
     bucket: str,
     master_pdf_s3_key: str,
+    toned_pdf_s3_key: str | None,
     volume_code: str,
     issue_code: str,
     manifest_s3_key: str,
@@ -224,13 +225,15 @@ async def _save_issue_metadata(
     issue = issue_matches[0] if issue_matches else Issue(
         volume_id=volume.id,
         issue_code=issue_code,
-        issue_s3_key=master_pdf_s3_key,
+        master_pdf_s3_key=master_pdf_s3_key,
     )
     if not issue_matches:
         session.add(issue)
         await session.flush()
 
-    issue.issue_s3_key = master_pdf_s3_key
+    issue.master_pdf_s3_key = master_pdf_s3_key
+    if toned_pdf_s3_key is not None:
+        issue.toned_pdf_s3_key = toned_pdf_s3_key
     issue.manifest_s3_key = manifest_s3_key
     existing_pages = (
         await session.scalars(select(Page).where(Page.issue_id == issue.id))
@@ -262,6 +265,7 @@ async def ingest_local_pdf(
     db_pool: DataBaseConnectionPool,
     bucket: str,
     master_pdf_s3_key: str,
+    toned_pdf_s3_key: str | None = None,
     dpi: int = 300,
     language: str = "eng",
     psm: int = 3,
@@ -397,6 +401,7 @@ async def ingest_local_pdf(
                 session,
                 bucket=bucket,
                 master_pdf_s3_key=master_pdf_s3_key,
+                toned_pdf_s3_key=toned_pdf_s3_key,
                 volume_code=volume_code,
                 issue_code=issue_code,
                 manifest_s3_key=manifest_key,
@@ -418,6 +423,7 @@ async def ingest_s3_pdf(
     db_pool: DataBaseConnectionPool,
     bucket: str,
     master_pdf_s3_key: str,
+    toned_pdf_s3_key: str | None = None,
     dpi: int = 300,
     language: str = "eng",
     psm: int = 3,
@@ -434,6 +440,7 @@ async def ingest_s3_pdf(
             db_pool=db_pool,
             bucket=bucket,
             master_pdf_s3_key=master_pdf_s3_key,
+            toned_pdf_s3_key=toned_pdf_s3_key,
             dpi=dpi,
             language=language,
             psm=psm,
@@ -447,6 +454,7 @@ async def ingest_all_s3_pdfs(
     db_pool: DataBaseConnectionPool,
     bucket: str,
     prefix: str = MASTER_PDF_PREFIX,
+    toned_pdf_s3_keys: dict[str, str] | None = None,
     dpi: int = 300,
     language: str = "eng",
     psm: int = 3,
@@ -468,6 +476,7 @@ async def ingest_all_s3_pdfs(
                 db_pool=db_pool,
                 bucket=bucket,
                 master_pdf_s3_key=key,
+                toned_pdf_s3_key=(toned_pdf_s3_keys or {}).get(key),
                 dpi=dpi,
                 language=language,
                 psm=psm,

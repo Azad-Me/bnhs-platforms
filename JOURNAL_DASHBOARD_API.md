@@ -22,16 +22,22 @@ control. The page was observed under the Admin role.
 | Screen need | API / contract | Status | Notes |
 |---|---|---|---|
 | List provisioned users | `GET /api/users?include_inactive=false&offset=0&limit=100` | **Completed** | Implemented and restricted to active Admin users. Returns user profile, role (`level`), active state, and timestamps. Pagination and optional inactive-user inclusion are supported. |
-| Add a user | `POST /api/users` with `{ "name", "email", "level" }` | **Partial** | Implemented for Admin. Validates/normalizes name and email and rejects duplicate email. The prototype offers QC user, Publisher, and Admin, but the backend `AccessLevel` enum currently contains only `admin` and `reviewer`; reconcile role names and supported values before wiring the form. |
-| Change a user's role | `PATCH /api/users/{user_id}` with `{ "level": "..." }` | **Partial** | Implemented for Admin, including last-active-Admin protection. Same role-enum mismatch applies. Update responses provide the updated user. |
+| Load available roles | `GET /api/roles` | **Completed** | Admin-only endpoint returns the fixed role keys and display names for the user form. |
+| Add a user | `POST /api/users` with `{ "name", "email", "level": "<role key>" }` | **Completed** | Validates/normalizes name/email and checks the requested role against the fixed database role catalog. Duplicate email returns conflict. |
+| Change a user's role | `PATCH /api/users/{user_id}` with `{ "level": "<role key>" }` | **Completed** | Accepts only one of the fixed role keys; last-active-Admin protection remains. |
 | Remove/deactivate a user | `DELETE /api/users/{user_id}` | **Completed** | Implemented as deactivation, preserving history; the final active Admin cannot be deactivated. Confirm the UI's remove icon uses this soft-delete behavior and provide confirmation/feedback. |
 | Read a user record | `GET /api/users/{user_id}` | **Completed** | Implemented for Admin; useful for detail/edit flows, though no separate detail view was visible on this page. |
+| Add/manage a role without code changes | No runtime role CRUD endpoint | **Not required** | Roles are a fixed set (`admin`, `qc_user`, `publisher`). Changes to role definitions require code/migration updates; API access is enforced by role-specific route dependencies, not a permission catalog. |
 
-All `/api/users` operations require an active Admin bearer token. Existing
-routes return the shared API response envelope. The prototype's role labels
-must be mapped to an agreed canonical backend enum; do not silently map
-Publisher to Reviewer without product confirmation. No search/filter control
-was visible in the inspected design; pagination is supported by the list API.
+All `/api/users` and `/api/roles` operations require an active Admin bearer
+token and use the shared API response envelope. The role catalog is seeded
+with Admin, QC user, and Publisher. Publisher is the prototype's reviewer/
+publisher role. No search/filter control was visible in the inspected design;
+user pagination is supported by the list API.
+
+Role access is fixed in the API layer by role-specific dependencies; the role
+table contains only role identity/display metadata and has no permission
+catalog. Adding or changing a role requires a code and migration change.
 
 ## Required API checklist
 
@@ -228,6 +234,9 @@ dashboard can display the complete catalog.
   "data": ... }` envelope. Protected routes require a bearer token.
 - The two page-list endpoints currently return page identity, issue, page
   number, status, check-page flag, approved revision ID, and timestamps.
+- The issue catalog response includes optional master-PDF, toned-PDF, and
+  manifest S3 keys at the issue level. Page records keep page-image source and
+  OCR keys only; they do not carry master- or toned-PDF paths.
 - The catalog README says page responses include dimensions and source/OCR S3
   keys, but the current `PageRead` schema does not expose those fields. Reconcile
   the README and schema before relying on those fields in a QC detail view.
@@ -286,11 +295,10 @@ on the In review page it also exposes tracked changes and the “Send back” an
 filters/counts by name type and To check, extracted name entries (including
 reference-author fields), and a form for adding a missed name.
 
-Therefore, the API authorization design must explicitly include Admin
-permissions: cross-state page read access and access to the observed editorial
-and review actions, subject to the final product policy. Do not implement
-Admin access by bypassing authorization checks; model the role/permissions
-explicitly and audit state-changing actions.
+Therefore, the API authorization design must explicitly include Admin access
+to cross-state page reads and the observed editorial/review actions, subject
+to the final product policy. Enforce this using fixed role-specific API
+dependencies and audit state-changing actions.
 
 These are observed Admin controls, not verified action semantics. Neither
 “Send back,” “Commit & publish,” “Revert to this,” “Harvest names,” nor a

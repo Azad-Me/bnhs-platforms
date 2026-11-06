@@ -5,7 +5,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..common.constant.access_level_enum import AccessLevel
-from ..common.models import User
+from ..common.models import Role, User
+from .role_service import RoleService
 from .schemas import UserCreate, UserUpdate
 from .security import GoogleIdentity
 
@@ -40,6 +41,9 @@ def _is_admin(user: User) -> bool:
 
 
 class UserManagementService:
+    def __init__(self) -> None:
+        self.role_service = RoleService()
+
     async def get_active_user(
         self,
         session: AsyncSession,
@@ -72,10 +76,11 @@ class UserManagementService:
     async def create_user(
         self, session: AsyncSession, payload: UserCreate
     ) -> User:
+        await self.role_service.get_role(session, payload.level)
         user = User(
             name=payload.name,
             email=str(payload.email),
-            level=payload.level.value,
+            level=payload.level,
         )
         try:
             existing = await session.scalar(
@@ -101,7 +106,7 @@ class UserManagementService:
             .where(User.email == identity.email)
             .with_for_update()
         )
-        
+
         if not user or (user and not user.is_active):
             raise UserNotFoundError(identity.email)
         return user
@@ -114,7 +119,7 @@ class UserManagementService:
     ) -> User:
         changes = payload.model_dump(exclude_unset=True)
         if "level" in changes:
-            changes["level"] = changes["level"].value
+            await self.role_service.get_role(session, changes["level"])
         if "is_active" in changes or "level" in changes:
             await self._lock_admin_changes(session)
         try:
@@ -187,6 +192,8 @@ class UserManagementService:
             email=email,
             level=AccessLevel.ADMIN.value,
         )
+        if await session.get(Role, AccessLevel.ADMIN.value) is None:
+            raise RuntimeError("The administrator role has not been initialized.")
         session.add(user)
         try:
             await session.flush()
@@ -223,5 +230,3 @@ class UserManagementService:
 
     async def _lock_admin_changes(self, session: AsyncSession) -> None:
         await session.execute(text("SELECT pg_advisory_xact_lock(827364921)"))
-
-

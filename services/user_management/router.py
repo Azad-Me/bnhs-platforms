@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,6 +24,8 @@ from .schemas import (
     UserRead,
     UserUpdate,
 )
+from .role_schemas import RoleRead
+from .role_service import RoleNotFoundError, RoleService
 from .security import (
     InvalidGoogleCredential,
     create_access_token,
@@ -34,7 +37,7 @@ from .service import (
     LastActiveAdminError,
     UserEmailConflictError,
     UserNotFoundError,
-    UserManagementService
+    UserManagementService,
 )
 
 
@@ -78,13 +81,30 @@ async def get_current_user(
     return user
 
 
-async def require_admin(user: User = Depends(get_current_user)) -> User:
-    if user.level.strip().casefold() != AccessLevel.ADMIN.value:
+def require_role(*levels: AccessLevel) -> Callable[..., Awaitable[User]]:
+    allowed_levels = {level.value for level in levels}
+
+    async def dependency(
+        user: User = Depends(get_current_user),
+    ) -> User:
+        return _require_user_role(user, allowed_levels)
+
+    return dependency
+
+
+def _require_user_role(user: User, allowed_levels: set[str]) -> User:
+    if user.level.strip().casefold() not in allowed_levels:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Administrator access is required.",
+            detail="This role is not permitted to perform this action.",
         )
     return user
+
+
+async def require_admin(
+    user: User = Depends(get_current_user),
+) -> User:
+    return _require_user_role(user, {AccessLevel.ADMIN.value})
 
 
 @router.post(
@@ -122,6 +142,18 @@ async def read_current_user(
     return ApiResponse.success(UserRead.model_validate(user))
 
 
+@router.get("/roles", response_model=ApiResponse[list[RoleRead]])
+async def list_roles(
+    session: AsyncSession = Depends(get_db_session),
+    role_service: RoleService = Depends(RoleService),
+    _: User = Depends(require_admin),
+) -> ApiResponse[list[RoleRead]]:
+    roles = await role_service.list_roles(session)
+    return ApiResponse.success(
+        [RoleRead.model_validate(role) for role in roles]
+    )
+
+
 @router.get("/users", response_model=ApiResponse[list[UserRead]])
 async def list_users(
     include_inactive: bool = False,
@@ -152,7 +184,11 @@ async def list_users(
         UserEmailConflictError: ApiExceptionRule(
             status_code=status.HTTP_409_CONFLICT,
             detail="A user with this email already exists.",
-        )
+        ),
+        RoleNotFoundError: ApiExceptionRule(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Role is not available.",
+        ),
     }
 )
 async def create_user(
@@ -201,6 +237,10 @@ async def read_user(
         LastActiveAdminError: ApiExceptionRule(
             status_code=status.HTTP_409_CONFLICT,
             detail=lambda error: str(error),
+        ),
+        RoleNotFoundError: ApiExceptionRule(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Role is not available.",
         ),
     }
 )

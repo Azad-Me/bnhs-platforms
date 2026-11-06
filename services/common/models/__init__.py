@@ -5,6 +5,7 @@ from .assignment import Assignment
 from .flag import Flag
 from .issue import Issue
 from .page import Page
+from .role import Role
 from .review import Review
 from .revision import Revision
 from .user import User
@@ -16,6 +17,7 @@ __all__ = [
     "Flag",
     "Issue",
     "Page",
+    "Role",
     "Review",
     "Revision",
     "User",

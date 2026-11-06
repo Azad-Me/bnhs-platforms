@@ -11,28 +11,7 @@ from pydantic import (
     model_validator,
 )
 
-from ..common.constant.access_level_enum import AccessLevel
-
-
-def _clean_required_text(value: str) -> str:
-    cleaned = value.strip()
-    if not cleaned:
-        raise ValueError("This field must not be blank.")
-    return cleaned
-
-
-def _normalize_access_level(value: object) -> AccessLevel:
-    if isinstance(value, AccessLevel):
-        return value
-    if isinstance(value, str):
-        try:
-            return AccessLevel(value.strip().casefold())
-        except ValueError as error:
-            choices = ", ".join(level.value for level in AccessLevel)
-            raise ValueError(
-                f"Access level must be one of: {choices}."
-            ) from error
-    raise ValueError("Access level must be a string.")
+from .validators import clean_required_text, normalize_role_key
 
 
 class UserCreate(BaseModel):
@@ -40,17 +19,17 @@ class UserCreate(BaseModel):
 
     name: str = Field(min_length=1, max_length=200)
     email: EmailStr
-    level: AccessLevel
+    level: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=64)
 
     @field_validator("name")
     @classmethod
     def clean_text(cls, value: str) -> str:
-        return _clean_required_text(value)
+        return clean_required_text(value)
 
     @field_validator("level", mode="before")
     @classmethod
-    def normalize_level(cls, value: object) -> AccessLevel:
-        return _normalize_access_level(value)
+    def normalize_level(cls, value: object) -> str:
+        return normalize_role_key(value)
 
     @field_validator("email")
     @classmethod
@@ -63,20 +42,22 @@ class UserUpdate(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     email: EmailStr | None = None
-    level: AccessLevel | None = None
+    level: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9_]*$", max_length=64
+    )
     is_active: bool | None = None
 
     @field_validator("name")
     @classmethod
     def clean_optional_name(cls, value: str | None) -> str | None:
-        return _clean_required_text(value) if value is not None else None
+        return clean_required_text(value) if value is not None else None
 
     @field_validator("level", mode="before")
     @classmethod
-    def normalize_level(cls, value: object) -> AccessLevel | None:
-        if value is None or isinstance(value, AccessLevel):
+    def normalize_level(cls, value: object) -> str | None:
+        if value is None:
             return value
-        return _normalize_access_level(value)
+        return normalize_role_key(value)
 
     @field_validator("email")
     @classmethod

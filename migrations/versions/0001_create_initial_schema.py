@@ -55,8 +55,6 @@ def upgrade() -> None:
         sa.Column("width", sa.Integer()),
         sa.Column("height", sa.Integer()),
         sa.Column("dpi", sa.Integer()),
-        sa.Column("master_pdf_s3_key", sa.Text()),
-        sa.Column("toned_pdf_s3_key", sa.Text()),
         sa.Column("ocr_s3_key", sa.Text()),
         sa.Column("status", sa.Text(), nullable=False),
         sa.Column("is_check_page", sa.Boolean(), server_default=sa.text("false"), nullable=False),

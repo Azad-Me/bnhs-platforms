@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict
 class IssueSummary(BaseModel):
     id: int
     issue_code: str
-    issue_s3_key: str | None
+    master_pdf_s3_key: str | None
+    toned_pdf_s3_key: str | None
     manifest_s3_key: str | None
     page_count: int
 
