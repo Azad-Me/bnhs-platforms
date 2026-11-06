@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...common.constant.qc_state_enum import QCState
 from ...common.db.pool import DataBaseConnectionPool
 from ...common.models import Issue, Page, Volume
 
@@ -248,7 +249,7 @@ async def _save_issue_metadata(
                 issue_id=issue.id,
                 page_number=page_number,
                 page_source_file=entry["image_s3_key"],
-                status="queued",
+                status=QCState.UNVERIFIED.value,
             )
             session.add(page)
 

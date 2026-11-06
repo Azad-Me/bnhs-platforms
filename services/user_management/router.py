@@ -66,7 +66,9 @@ def _authentication_required() -> HTTPException:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
 ) -> User:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _authentication_required()

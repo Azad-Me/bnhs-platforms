@@ -93,7 +93,7 @@ API_ERROR_RESPONSES = {
         "model": ApiErrorResponse,
         "description": "Standard API error response.",
     }
-    for status_code in (400, 401, 403, 404, 409, 422, 500)
+    for status_code in (400, 401, 403, 404, 409, 422, 500, 502)
 }
 
 

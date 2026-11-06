@@ -26,8 +26,8 @@ The `issues` row stores the original master-PDF key and manifest key. Each
 `pages` row stores the rendered JPEG key, OCR JSON key, and page dimensions;
 `page_number` selects the individual page. Images are JPEG-encoded at quality
 90 and uploaded as `image/jpeg`. The original S3 PDF is not changed. New pages
-enter the `queued` status. Reprocessing an issue overwrites the same JPEG/OCR
-keys without resetting existing QC statuses.
+enter the `unverified` QC state. Reprocessing an issue overwrites the same
+JPEG/OCR keys without resetting existing QC states.
 
 Install dependencies and the Tesseract executable:
 

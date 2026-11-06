@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....common.db.dependencies import get_db_session
@@ -33,8 +33,14 @@ router = APIRouter(
 async def list_volumes_with_issues(
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(get_current_user),
+    hide_completed_volumes: bool = Query(default=False),
+    hide_completed_issues: bool = Query(default=False),
 ) -> ApiResponse[list[VolumeWithIssues]]:
-    volumes = await get_volumes_with_issues(session)
+    volumes = await get_volumes_with_issues(
+        session,
+        hide_completed_volumes=hide_completed_volumes,
+        hide_completed_issues=hide_completed_issues,
+    )
     return ApiResponse.success(volumes)
 
 
