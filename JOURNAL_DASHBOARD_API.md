@@ -1,7 +1,8 @@
 # Journal QC dashboard API checklist
 
-This checklist maps the Journals screen to the backend routes currently present
-in the repository. Status reflects the code inspected on 2026-11-05:
+This checklist maps the Journal QC prototype screens to the backend routes
+currently present in the repository. Status reflects the code inspected on
+2026-11-07:
 
 - **Completed** — the route and the required behavior for this item exist.
 - **Partial** — a related route exists, but it does not yet return all data or
@@ -11,6 +12,26 @@ in the repository. Status reflects the code inspected on 2026-11-05:
 The dashboard displays 100 volumes, 400 issues, page totals, overall progress,
 per-volume and per-issue progress, completed/in-review/unverified breakdowns,
 and controls to hide completed volumes or issues.
+
+## Admin Users page API checklist
+
+The design-draft Users page shows a user list with name/email, role selectors,
+an add-user form (full name, Google account email, role), and a per-user remove
+control. The page was observed under the Admin role.
+
+| Screen need | API / contract | Status | Notes |
+|---|---|---|---|
+| List provisioned users | `GET /api/users?include_inactive=false&offset=0&limit=100` | **Completed** | Implemented and restricted to active Admin users. Returns user profile, role (`level`), active state, and timestamps. Pagination and optional inactive-user inclusion are supported. |
+| Add a user | `POST /api/users` with `{ "name", "email", "level" }` | **Partial** | Implemented for Admin. Validates/normalizes name and email and rejects duplicate email. The prototype offers QC user, Publisher, and Admin, but the backend `AccessLevel` enum currently contains only `admin` and `reviewer`; reconcile role names and supported values before wiring the form. |
+| Change a user's role | `PATCH /api/users/{user_id}` with `{ "level": "..." }` | **Partial** | Implemented for Admin, including last-active-Admin protection. Same role-enum mismatch applies. Update responses provide the updated user. |
+| Remove/deactivate a user | `DELETE /api/users/{user_id}` | **Completed** | Implemented as deactivation, preserving history; the final active Admin cannot be deactivated. Confirm the UI's remove icon uses this soft-delete behavior and provide confirmation/feedback. |
+| Read a user record | `GET /api/users/{user_id}` | **Completed** | Implemented for Admin; useful for detail/edit flows, though no separate detail view was visible on this page. |
+
+All `/api/users` operations require an active Admin bearer token. Existing
+routes return the shared API response envelope. The prototype's role labels
+must be mapped to an agreed canonical backend enum; do not silently map
+Publisher to Reviewer without product confirmation. No search/filter control
+was visible in the inspected design; pagination is supported by the list API.
 
 ## Required API checklist
 

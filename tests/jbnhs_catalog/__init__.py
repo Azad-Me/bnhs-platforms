@@ -1,1 +1,0 @@
-"""JBNHS catalog tests."""
