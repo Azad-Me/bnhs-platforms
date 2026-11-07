@@ -123,7 +123,9 @@ async def require_admin(
 async def login(
     payload: GoogleSignInRequest,
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
 ) -> ApiResponse[TokenResponse]:
     identity = await verify_google_credential(payload.credential)
     user = await user_management_service.authenticate_google_identity(
@@ -162,7 +164,9 @@ async def list_users(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
     _: User = Depends(require_admin),
 ) -> ApiResponse[list[UserRead]]:
     users = await user_management_service.list_users(
@@ -196,7 +200,9 @@ async def list_users(
 async def create_user(
     payload: UserCreate,
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
     _: User = Depends(require_admin),
 ) -> ApiResponse[UserRead]:
     user = await user_management_service.create_user(session, payload)
@@ -216,7 +222,9 @@ async def read_user(
     user_id: int,
     session: AsyncSession = Depends(get_db_session),
     _: User = Depends(require_admin),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
 ) -> ApiResponse[UserRead]:
     user = await user_management_service.get_user(session, user_id)
     return ApiResponse.success(UserRead.model_validate(user))
@@ -250,7 +258,9 @@ async def update_user(
     user_id: int,
     payload: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
     _: User = Depends(require_admin),
 ) -> ApiResponse[UserRead]:
     user = await user_management_service.update_user(session, user_id, payload)
@@ -276,7 +286,9 @@ async def update_user(
 async def deactivate_user(
     user_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user_management_service = UserManagementService(),
+    user_management_service: UserManagementService = Depends(
+        UserManagementService
+    ),
     _: User = Depends(require_admin),
 ) -> ApiResponse[dict[str, str]]:
     await user_management_service.deactivate_user(session, user_id)
