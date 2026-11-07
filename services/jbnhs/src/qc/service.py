@@ -35,10 +35,12 @@ async def get_page_volume_and_issue(
         raise PageNotFoundError("OCR s3 Key not found")
     
     page_source = ocr_s3_key.split("tesseract/")[-1]
-    source = page_source.split("/")
-    vol,issue,page_key = source[0], source[1], source[2]
+    source = [part for part in page_source.split("/") if part]
+    vol = source[0] if len(source) > 0 else "unknown"
+    issue = source[1] if len(source) > 1 else "unknown"
+    page_key = source[2] if len(source) > 2 else (source[-1] if source else "unknown")
 
-    return vol,issue,page_key
+    return vol, issue, page_key
 
 
 
@@ -131,7 +133,7 @@ async def get_qc_page(
             "Unable to create an authorized page-scan URL."
         ) from error
 
-    volume, issue, _ = await get_page_volume_and_issue(session, page)
+    volume, issue, _ = await get_page_volume_and_issue( page)
 
     return QCPageRead(
         id=page.id,

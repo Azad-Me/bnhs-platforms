@@ -2,7 +2,7 @@
 
 This checklist maps the Journal QC prototype screens to the backend routes
 currently present in the repository. Status reflects the code inspected on
-2026-11-07:
+2026-11-08:
 
 - **Completed** — the route and the required behavior for this item exist.
 - **Partial** — a related route exists, but it does not yet return all data or
@@ -21,7 +21,9 @@ its `api.py`, schemas, and service logic together:
 - `services/jbnhs/src/catalog` owns volume, issue, and issue-page listing.
 - `services/jbnhs/src/dashboard` owns overall dashboard progress.
 - `services/jbnhs/src/assignments` owns page claim and release operations.
-- `services/jbnhs/src/qc` owns QC page content, revision, and scan reads.
+- `services/jbnhs/src/qc` owns QC page content, revision history/comparison,
+  and scan reads.
+- `services/jbnhs/src/workflow` owns review submission and reviewer decisions.
 - `services/user_management` owns authentication, roles, and user management.
 
 New workflow areas should get their own domain module (for example,
@@ -68,8 +70,8 @@ catalog. Adding or changing a role requires a code and migration change.
 | 9 | Show issue page-status totals | `GET /api/volumes/{volume_id}/issues` | **Completed** | Issue summaries include counts for Unverified, Review, and Completed pages; `GET /api/issues/{issue_id}/pages` also returns each page's validated QC state. |
 | 10 | Claim an unverified page before editing | `POST /api/pages/{page_id}/claim` | **Completed** | QC users and Admins can claim eligible pages. A row lock serializes claims; another active claimant receives 409. Claims expire after 30 minutes. |
 | 11 | Load page QC content and scan | `GET /api/pages/{page_id}` | **Completed** | Returns OCR text, the caller's latest draft for QC users (latest revision for Admin/Publisher), nullable revision ID, state, claim state, and a 5-minute authorized scan URL. First-time corrected text is OCR text or empty. |
-| 12 | Save draft corrections and view role-scoped history | `POST /api/pages/{page_id}/revisions` saves structured page data; revision history reads remain future work. | **Partial** | QC users must hold the active page claim and send `base_revision_id` (`null` for the OCR baseline) to detect stale saves. Each save stores an immutable structured JSON revision and parent ID. Existing word boxes are server-owned; new words receive an estimated box and alignment warnings when space is insufficient. |
-| 13 | Submit review and complete/approve a page | Add workflow operations for submitting a page for review and recording a reviewer decision/approval; define allowed transitions and role checks. | **Not started** | QC submission removes the page from the QC user's queue and makes it visible to reviewers and auditors. The reviewer design shows “Send back” and “Commit & publish”; their exact side effects still need confirmation. |
+| 12 | Save draft corrections and view role-scoped history | `POST /api/pages/{page_id}/revisions`, `GET /api/pages/{page_id}/revisions`, revision content and comparison routes. | **Completed** | QC users see only their own revisions and cannot read history while a page is in review/completed or claimed by another user. Admins and Publishers can read the common history. History includes the OCR import baseline and review events when available; revision comparison returns a unified text diff. |
+| 13 | Submit review and complete/approve a page | `POST /api/pages/{page_id}/submit-review` and `POST /api/pages/{page_id}/review`. | **Completed** | QC submission requires an active claim and saved revision, records the actor/time, releases the claim, and moves the page to `in_review`. Admins/Publishers can send it back with a required note (`needs_changes`) or approve/publish it (`completed`), recording the approved revision. |
 | 14 | Release or expire page claims | `DELETE /api/pages/{page_id}/claim` | **Completed** | QC users release their own claim; Admins can release any active claim. Release returns a page without a saved draft to `unverified`, or a page with the claimant's draft to `needs_changes`. Expired locks are reclaimed on the next claim attempt. |
 | 15 | Load names and highlighted text | Add `GET /api/pages/{page_id}/names`, returning detected names with type (Species, Person, Reference), review status, confidence, and text offsets/spans for highlighting. | **Not started** | The Names panel shows category/status counts and a Highlighted text view. No name-annotation read API was found. |
 | 16 | Review detected names | Add an authenticated operation to accept/update an individual name annotation and a bulk action for “Accept all confident.” | **Not started** | The panel exposes “Accept all confident” and “To check”; no annotation decision APIs were found. Exact per-name actions and confidence threshold need confirmation. |
@@ -89,7 +91,10 @@ scoped annotation record containing, at minimum:
 
 - page and source revision IDs;
 - category (`species`, `person`, or `reference`);
-- exact printed text and its start/end offsets in the associated text;
+- exact printed text and a client-supplied bounding box in page-image
+  coordinates, stored with the annotation;
+- start/end text offsets for highlighting when supplied; define their
+  character-counting convention and relation to the source revision;
 - review state (for example, `needs_review` or `accepted`);
 - confidence for machine-detected suggestions, if supplied by the detection
   process;
@@ -103,10 +108,10 @@ change annotations.
 
 | Future operation | Proposed endpoint | Required behavior |
 |---|---|---|
-| Load names | `GET /api/pages/{page_id}/names` | Return annotations for the page's text revision, counts by category and review state, offsets for highlighting, confidence where available, and the associated `revision_id`. Return an empty list and zero counts when none exist. |
+| Load names | `GET /api/pages/{page_id}/names` | Return annotations for the page's text revision, counts by category and review state, client-provided bounding boxes, offsets for highlighting when available, confidence where available, and the associated `revision_id`. Return an empty list and zero counts when none exist. |
 | Review one name | `PATCH /api/pages/{page_id}/names/{name_id}` | Update an annotation's review state and, where allowed, category/text. Enforce page access and claim/role rules. |
 | Accept confident names | `POST /api/pages/{page_id}/names/accept-confident` | Bulk-accept eligible suggestions. Define and document the confidence threshold; report changed/skipped counts. |
-| Add a missed name | `POST /api/pages/{page_id}/names` | Create an annotation from category and exact printed text, associated with the current text revision. Define how its text span is selected or whether offsets are optional until placed. |
+| Add a missed name | `POST /api/pages/{page_id}/names` | Create an annotation from category, exact printed text, and the client-provided bounding box, associated with the current text revision; store the box in the database. Define whether text offsets are supplied alongside the box or optional until placed. |
 
 The screen also has All, Species, People, References, and To check filters,
 which can be applied client-side to the names response. The Highlighted text
@@ -127,15 +132,13 @@ action; `NEEDS_CHANGES` means returned to QC for more work; `COMPLETED` means
 approved. The UI can display `IN_REVIEW` as “Review.” Keep role authorization
 separate from this state enum.
 
-On successful submission, atomically save/identify the submitted revision,
+On successful submission, atomically identify the submitted revision,
 transition `IN_PROGRESS` to `IN_REVIEW`, record who submitted and when, release
 the QC claim, and remove the page from that QC user's actionable queue. The
-page must then be visible in reviewer and auditor views, subject to their
-authorization; auditors are read-only unless a later requirement says
-otherwise. Reviewer approval transitions to `COMPLETED`. A return-for-changes
-transition should make the page actionable in QC again as `NEEDS_CHANGES` (or
-`IN_PROGRESS` when claimed); confirm the exact return state and notification
-behavior when the reviewer screen is inspected.
+page must then be visible in Admin/Publisher reviewer views, subject to their
+authorization; any future auditor role should be read-only. Reviewer approval
+transitions to `COMPLETED`. A return-for-changes transition makes the page
+actionable in QC again as `NEEDS_CHANGES`.
 
 Validate transitions server-side and reject stale/unauthorized submissions.
 Do not treat hiding a row in the client as removal from the QC queue: queue
@@ -189,9 +192,9 @@ user.
 | Claim page | `POST /api/pages/{page_id}/claim` and `DELETE /api/pages/{page_id}/claim` | Implemented with an atomic page row lock and 30-minute assignment lease. |
 | Load QC page and scan | `GET /api/pages/{page_id}` | Implemented; returns role-scoped current revision, OCR/corrected text and claim state, plus an authorized 5-minute scan URL. |
 | Save draft / revision | Authenticated revision write operation | Save corrected text against a base revision, require a valid claim, and detect concurrent edits. |
-| Revision history and comparison | `GET /api/pages/{page_id}/revisions` and revision content/diff retrieval | Scope results by role: QC users receive only their own revisions/history; reviewers and auditors receive the common authorized page history, including author/time/source and comparison data. Enforce page access on both list and content retrieval. Reviewer/auditor screen requirements remain to be confirmed. |
-| Submit a page for review | `POST /api/pages/{page_id}/submit-review` | Validate the QC user's claim and draft, transition the page to `IN_REVIEW`, record the submitted revision/actor/time, release the QC claim, remove it from QC queues, and make it available in reviewer/auditor views. |
-| Reviewer/Admin decision | Authenticated review-decision operation, e.g. send back or commit/publish | Support the visible actions for authorized reviewers and admins; record decision/actor/time and enforce role-based transitions. The Admin prototype exposes “Send back” and “Commit & publish”; exact state transitions, publication effects, and required rationale need product confirmation. |
+| Revision history and comparison | `GET /api/pages/{page_id}/revisions`, `GET /api/pages/{page_id}/revisions/{revision_id}`, and `GET /api/pages/{page_id}/revisions/{revision_id}/compare` | Implemented. QC users receive only their own revisions; Admins/Publishers receive the common page history. List/content/diff reads enforce page access. `against_revision_id` omitted or null compares against the OCR baseline. |
+| Submit a page for review | `POST /api/pages/{page_id}/submit-review` | Implemented. Requires the QC user's active claim and a saved draft, records the submitted revision and actor/time, releases the claim, and transitions to `IN_REVIEW`. |
+| Reviewer/Admin decision | `POST /api/pages/{page_id}/review` with `send_back` or `approve` | Implemented for Admin and Publisher. `send_back` requires a non-empty note and returns the page to `NEEDS_CHANGES`; `approve` records the approved revision and transitions it to `COMPLETED`. |
 | Release/expire claim | `DELETE /api/pages/{page_id}/claim` | Implemented. Expired assignment rows are marked expired when a later claim is attempted. |
 
 ### Saving structured page revisions
@@ -234,8 +237,11 @@ tombstones so their IDs are never reused. New words must have a fresh `wN` ID,
 non-empty text, and empty box; their box is estimated from neighboring word
 geometry and the line box. The save requires an active QC claim and
 `in_progress` page state, rejects stale base IDs with `409`, and extends the
-claim lease. Line IDs and line membership are fixed in this first version;
-line insertion/deletion and revision-history reads are not implemented.
+claim lease. Line insertion, line deletion, word insertion, and word deletion
+are fully supported; line insertion estimates line boxes from neighboring lines
+(or uses supplied valid boxes) and realigns added words within the line. Line
+deletion allows omitted lines or explicit line deletion tombstones, and word
+deletion allows omitted words or explicit word deletion tombstones (`t: "", b: []`).
 
 ## Text editing and realignment implementation steps
 
@@ -338,11 +344,10 @@ cannot edit it. Completed/Review rows were marked unavailable to the current
 QC user's role, while unverified pages were offered as openable.
 
 **History visibility requirement (product decision):** QC users should see
-only revisions and history they authored. Reviewers and auditors should see
+only revisions and history they authored. Admins and Publishers should see
 the common page history, subject to page authorization. Apply the same rule to
-revision content/comparison endpoints, not just the history list. The
-reviewer/auditor screens have not yet been inspected, so their additional
-history needs are not yet confirmed.
+revision content/comparison endpoints, not just the history list. Any future
+auditor role should be read-only.
 
 The page 6 editor was opened with permission; this claimed it to the current
 user. It displays read-only OCR text, an editable corrected-text field, a scan
@@ -353,8 +358,9 @@ view; “Accept all confident”; and a form to add a missed name by type and ex
 printed text. History shows versions such as the OCR import and offers version
 comparison. The sample had no OCR text, and loading its scan returned HTTP
 403, so scan authorization and availability need confirmation. Exact name
-review actions, confidence threshold, review decisions, and claim release need
-confirmation. No flag-resolution requirement is visible on the screens
+review actions and confidence threshold remain for the name-annotation APIs.
+Submission and review decisions release the QC claim and apply the documented
+state transitions. No flag-resolution requirement is visible on the screens
 examined so far.
 
 ### Reviewer issue/page design observed
@@ -386,11 +392,10 @@ to cross-state page reads and the observed editorial/review actions, subject
 to the final product policy. Enforce this using fixed role-specific API
 dependencies and audit state-changing actions.
 
-These are observed Admin controls, not verified action semantics. Neither
-“Send back,” “Commit & publish,” “Revert to this,” “Harvest names,” nor a
-name-acceptance action was activated. Confirm whether committing publishes the
-text, approves the submission, or both; whether send-back requires a reason
-and returns the page to the QC queue; what harvesting changes; whether
-reverting creates a new revision; and whether names are shared annotations.
-The reviewer role may have a different permission set and must be confirmed
-when its screen/account is available.
+The implemented “Send back” action requires a reason and returns the page to
+the QC queue as `NEEDS_CHANGES`. “Commit & publish” records an approval and
+the approved revision, transitioning the page to `COMPLETED`. “Revert to
+this,” “Harvest names,” and name-acceptance actions remain unimplemented; their
+effects and the shared-annotation policy still need confirmation. The
+Publisher role is treated as the reviewer/publisher role and shares these
+review actions with Admin.

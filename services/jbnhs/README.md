@@ -1,6 +1,6 @@
-# JBNHS catalog API
+# JBNHS APIs
 
-These read-only endpoints require a valid bearer token from Google Sign-In.
+These catalog read endpoints require a valid bearer token from Google Sign-In.
 The catalog uses three layers under `src/catalog/`: `api.py` handles HTTP,
 authentication, and response envelopes; `schemas.py` defines API data models;
 and `service.py` owns database queries and result assembly. ORM entities remain
@@ -14,6 +14,17 @@ in `services/common/models/`.
   issue only when it belongs to the requested volume.
 - `GET /api/issues/{issue_id}/pages` returns the issue's pages ordered by page
   number. A nonexistent issue returns `404`.
+- `GET /api/pages/{page_id}/revisions` returns the role-scoped page history,
+  including the OCR import baseline when available. QC users see their own
+  revisions; Admins and Publishers see the common history.
+- `GET /api/pages/{page_id}/revisions/{revision_id}` returns revision content.
+  The `/compare` subroute returns a unified text diff against another revision
+  or, when `against_revision_id` is omitted, the OCR baseline.
+- `POST /api/pages/{page_id}/submit-review` lets the active QC claimant submit
+  a saved revision for review and releases the claim.
+- `POST /api/pages/{page_id}/review` lets Admins and Publishers send a page
+  back with `{"decision":"send_back","note":"..."}` or approve/publish it with
+  `{"decision":"approve"}`. Send-back notes are required.
 
 The page response includes page dimensions, QC status, and the source/OCR S3
 keys for use by the QC client. Each issue summary includes its source PDF S3 key.

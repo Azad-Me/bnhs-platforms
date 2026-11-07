@@ -6,6 +6,7 @@ from typing import Any
 
 
 _WORD_ID = re.compile(r"^w([1-9]\d*)$")
+_LINE_ID = re.compile(r"^l([1-9]\d*)$")
 
 
 class RevisionDocumentError(ValueError):
@@ -19,18 +20,28 @@ def normalize_ocr_document(document: dict[str, Any]) -> dict[str, Any]:
 
     normalized = dict(document)
     normalized_lines: list[dict[str, Any]] = []
-    seen_lines: set[str] = set()
+
+    used_line_ids: set[str] = set()
     for line_index, line in enumerate(lines, start=1):
         if not isinstance(line, dict) or not isinstance(line.get("words"), list):
             raise RevisionDocumentError(
                 f"Line {line_index} must contain a words list."
             )
         line_id = line.get("id")
+        if isinstance(line_id, str) and line_id:
+            if line_id in used_line_ids:
+                raise RevisionDocumentError(f"Duplicate line ID: {line_id}.")
+            used_line_ids.add(line_id)
+
+    next_generated_line_id = 1
+    for line_index, line in enumerate(lines, start=1):
+        line_id = line.get("id")
         if not isinstance(line_id, str) or not line_id:
-            line_id = f"l{line_index}"
-        if line_id in seen_lines:
-            raise RevisionDocumentError(f"Duplicate line ID: {line_id}.")
-        seen_lines.add(line_id)
+            while f"l{next_generated_line_id}" in used_line_ids:
+                next_generated_line_id += 1
+            line_id = f"l{next_generated_line_id}"
+            used_line_ids.add(line_id)
+            next_generated_line_id += 1
 
         normalized_words: list[dict[str, Any]] = []
         for word_index, source_word in enumerate(line["words"], start=1):
@@ -45,26 +56,26 @@ def normalize_ocr_document(document: dict[str, Any]) -> dict[str, Any]:
                 )
             normalized_words.append(word)
 
-        used_ids: set[str] = set()
+        used_word_ids: set[str] = set()
         for word in normalized_words:
             word_id = word.get("id")
             if not isinstance(word_id, str) or not word_id:
                 continue
-            if word_id in used_ids:
+            if word_id in used_word_ids:
                 raise RevisionDocumentError(
                     f"Duplicate word ID {word_id} in line {line_id}."
                 )
-            used_ids.add(word_id)
-        next_generated_id = 1
+            used_word_ids.add(word_id)
+        next_generated_word_id = 1
         for word in normalized_words:
             word_id = word.get("id")
             if not isinstance(word_id, str) or not word_id:
-                while f"w{next_generated_id}" in used_ids:
-                    next_generated_id += 1
-                word_id = f"w{next_generated_id}"
+                while f"w{next_generated_word_id}" in used_word_ids:
+                    next_generated_word_id += 1
+                word_id = f"w{next_generated_word_id}"
                 word["id"] = word_id
-                used_ids.add(word_id)
-                next_generated_id += 1
+                used_word_ids.add(word_id)
+                next_generated_word_id += 1
             if _word_number(word_id) is None:
                 raise RevisionDocumentError(
                     f"Word IDs in line {line_id} must use the w-number format."
@@ -109,6 +120,7 @@ def realign_revision_document(
                     height=page_height,
                     label=f"Word {word['id']} in line {line['id']}",
                 )
+
     if not isinstance(submitted_document, dict):
         raise RevisionDocumentError("The submitted page document must be an object.")
     submitted_lines = submitted_document.get("lines")
@@ -116,125 +128,408 @@ def realign_revision_document(
         raise RevisionDocumentError("The submitted page must contain a lines list.")
 
     base_lines = {line["id"]: line for line in base["lines"]}
-    submitted_by_id: dict[str, dict[str, Any]] = {}
-    for index, line in enumerate(submitted_lines, start=1):
-        if not isinstance(line, dict) or not isinstance(line.get("id"), str):
-            raise RevisionDocumentError(f"Submitted line {index} needs a line ID.")
-        line_id = line["id"]
-        if line_id in submitted_by_id:
-            raise RevisionDocumentError(f"Duplicate submitted line ID: {line_id}.")
-        if line_id not in base_lines:
-            raise RevisionDocumentError(f"Unknown line ID: {line_id}.")
-        if not isinstance(line.get("words"), list):
-            raise RevisionDocumentError(f"Line {line_id} must contain a words list.")
-        submitted_by_id[line_id] = line
+    max_base_line_id = max(
+        (
+            number
+            for line_id in base_lines
+            if (number := _line_number(line_id)) is not None
+        ),
+        default=0,
+    )
 
-    missing_lines = set(base_lines) - set(submitted_by_id)
-    if missing_lines:
-        raise RevisionDocumentError(
-            "Lines cannot be removed by this operation; use an explicit line "
-            f"deletion operation. Missing: {', '.join(sorted(missing_lines))}."
-        )
-
-    output = dict(base)
     warnings: list[str] = []
+    output = dict(base)
     output_lines: list[dict[str, Any]] = []
-    for base_line in base["lines"]:
-        line_id = base_line["id"]
-        submitted_line = submitted_by_id[line_id]
-        base_words = {word["id"]: word for word in base_line["words"]}
-        submitted_words = submitted_line["words"]
-        seen_word_ids: set[str] = set()
-        additions: list[dict[str, Any]] = []
-        output_words: list[dict[str, Any]] = []
-        max_base_id = max(
-            (
-                number
-                for word_id in base_words
-                if (number := _word_number(word_id)) is not None
-            ),
-            default=0,
-        )
 
-        for index, word in enumerate(submitted_words, start=1):
-            if not isinstance(word, dict):
-                raise RevisionDocumentError(
-                    f"Word {index} in line {line_id} must be an object."
-                )
-            word_id = word.get("id")
-            text = word.get("t")
-            if not isinstance(word_id, str) or not word_id:
-                raise RevisionDocumentError(
-                    f"Word {index} in line {line_id} needs a word ID."
-                )
-            if not isinstance(text, str):
-                raise RevisionDocumentError(
-                    f"Word {word_id} in line {line_id} must have text."
-                )
-            if word_id in seen_word_ids:
-                raise RevisionDocumentError(
-                    f"Duplicate word ID {word_id} in line {line_id}."
-                )
-            seen_word_ids.add(word_id)
+    seen_line_ids: set[str] = set()
+    next_generated_line_id = max_base_line_id + 1
 
-            if word_id in base_words:
-                original = base_words[word_id]
-                word_copy = dict(original)
-                if text == "" and word.get("b") != []:
+    normalized_submitted_lines: list[dict[str, Any]] = []
+    for index, line in enumerate(submitted_lines, start=1):
+        if not isinstance(line, dict):
+            raise RevisionDocumentError(f"Submitted line {index} must be an object.")
+        if not isinstance(line.get("words"), list):
+            raise RevisionDocumentError(
+                f"Submitted line {index} must contain a words list."
+            )
+
+        line_id = line.get("id")
+        if line_id is not None and not isinstance(line_id, str):
+            raise RevisionDocumentError(f"Submitted line {index} needs a string line ID.")
+
+        if line_id:
+            if line_id in seen_line_ids:
+                raise RevisionDocumentError(f"Duplicate submitted line ID: {line_id}.")
+            if line_id not in base_lines:
+                number = _line_number(line_id)
+                if number is None:
                     raise RevisionDocumentError(
-                        f"Deleted word {word_id} must have an empty box."
+                        f"Line ID {line_id} must use the l-number format."
                     )
-                word_copy["t"] = text
-                if text == "":
-                    word_copy["b"] = []
-                    word_copy.pop("c", None)
-                elif text != original["t"]:
-                    word_copy.pop("c", None)
-                output_words.append(word_copy)
-                continue
+                if number <= max_base_line_id:
+                    raise RevisionDocumentError(
+                        f"New line {line_id} must use an l-number greater than "
+                        "the existing line IDs."
+                    )
+            seen_line_ids.add(line_id)
+        else:
+            while (
+                f"l{next_generated_line_id}" in seen_line_ids
+                or f"l{next_generated_line_id}" in base_lines
+            ):
+                next_generated_line_id += 1
+            line_id = f"l{next_generated_line_id}"
+            seen_line_ids.add(line_id)
+            next_generated_line_id += 1
 
-            _validate_box(word.get("b"), f"New word {word_id} in line {line_id}")
-            if word.get("b") != []:
-                raise RevisionDocumentError(
-                    f"New word {word_id} must have an empty box for realignment."
-                )
-            number = _word_number(word_id)
-            if number is None or number <= max_base_id:
-                raise RevisionDocumentError(
-                    f"New word {word_id} must use a w-number greater than "
-                    f"the existing IDs in line {line_id}."
-                )
-            if not text.strip():
-                raise RevisionDocumentError(
-                    f"New word {word_id} cannot be blank; remove the empty "
-                    "placeholder before saving."
-                )
-            new_word = {key: value for key, value in word.items() if key != "c"}
-            new_word["b"] = []
-            additions.append(new_word)
-            output_words.append(new_word)
+        line_copy = dict(line)
+        line_copy["id"] = line_id
+        normalized_submitted_lines.append(line_copy)
 
-        for word_id, original in base_words.items():
-            if word_id not in seen_word_ids:
-                raise RevisionDocumentError(
-                    f"Word {word_id} is missing from line {line_id}; represent "
-                    "a deletion with empty text and an empty box."
-                )
+    for line_index, submitted_line in enumerate(normalized_submitted_lines):
+        line_id = submitted_line["id"]
+        submitted_words = submitted_line["words"]
 
-        _assign_added_word_boxes(
-            line=base_line,
-            words=output_words,
-            additions=additions,
-            page_width=page_width,
-            page_height=page_height,
-            warnings=warnings,
+        is_tombstone = (
+            submitted_line.get("b") == []
+            and (
+                len(submitted_words) == 0
+                or all(
+                    isinstance(w, dict) and w.get("t") == "" and w.get("b") == []
+                    for w in submitted_words
+                )
+            )
         )
-        line_copy = dict(base_line)
-        line_copy["words"] = output_words
-        output_lines.append(line_copy)
+        if is_tombstone:
+            continue
+
+        if line_id in base_lines:
+            base_line = base_lines[line_id]
+            base_words = {word["id"]: word for word in base_line["words"]}
+            base_words_order = [word["id"] for word in base_line["words"]]
+            max_base_id = max(
+                (
+                    number
+                    for word_id in base_words
+                    if (number := _word_number(word_id)) is not None
+                ),
+                default=0,
+            )
+
+            seen_word_ids: set[str] = set()
+            additions: list[dict[str, Any]] = []
+            output_words: list[dict[str, Any]] = []
+            next_generated_word_id = max_base_id + 1
+            base_order_idx = 0
+
+            for index, word in enumerate(submitted_words, start=1):
+                if not isinstance(word, dict):
+                    raise RevisionDocumentError(
+                        f"Word {index} in line {line_id} must be an object."
+                    )
+                word_id = word.get("id")
+                text = word.get("t")
+                if not isinstance(text, str):
+                    raise RevisionDocumentError(
+                        f"Word {word_id or index} in line {line_id} must have text."
+                    )
+
+                if isinstance(word_id, str) and word_id:
+                    if word_id in seen_word_ids:
+                        raise RevisionDocumentError(
+                            f"Duplicate word ID {word_id} in line {line_id}."
+                        )
+                else:
+                    while (
+                        f"w{next_generated_word_id}" in seen_word_ids
+                        or f"w{next_generated_word_id}" in base_words
+                    ):
+                        next_generated_word_id += 1
+                    word_id = f"w{next_generated_word_id}"
+                    next_generated_word_id += 1
+
+                seen_word_ids.add(word_id)
+
+                if word_id in base_words:
+                    target_idx = (
+                        base_words_order.index(word_id)
+                        if word_id in base_words_order
+                        else base_order_idx
+                    )
+                    while base_order_idx < target_idx:
+                        skipped_id = base_words_order[base_order_idx]
+                        base_order_idx += 1
+                        if skipped_id not in seen_word_ids:
+                            seen_word_ids.add(skipped_id)
+                            skipped_orig = base_words[skipped_id]
+                            skipped_copy = dict(skipped_orig)
+                            skipped_copy["t"] = ""
+                            skipped_copy["b"] = []
+                            skipped_copy.pop("c", None)
+                            output_words.append(skipped_copy)
+
+                    base_order_idx = max(base_order_idx, target_idx + 1)
+
+                    original = base_words[word_id]
+                    word_copy = dict(original)
+                    if text == "" and word.get("b") != []:
+                        raise RevisionDocumentError(
+                            f"Deleted word {word_id} must have an empty box."
+                        )
+                    word_copy["t"] = text
+                    if text == "":
+                        word_copy["b"] = []
+                        word_copy.pop("c", None)
+                    elif text != original["t"]:
+                        word_copy.pop("c", None)
+                    output_words.append(word_copy)
+                    continue
+
+                word_box = word.get("b", [])
+                _validate_box(word_box, f"New word {word_id} in line {line_id}")
+                if word_box != []:
+                    raise RevisionDocumentError(
+                        f"New word {word_id} must have an empty box for realignment."
+                    )
+                number = _word_number(word_id)
+                if number is None or number <= max_base_id:
+                    raise RevisionDocumentError(
+                        f"New word {word_id} must use a w-number greater than "
+                        f"the existing IDs in line {line_id}."
+                    )
+                if not text.strip():
+                    raise RevisionDocumentError(
+                        f"New word {word_id} cannot be blank; remove the empty "
+                        "placeholder before saving."
+                    )
+                new_word = {key: value for key, value in word.items() if key != "c"}
+                new_word["id"] = word_id
+                new_word["b"] = []
+                additions.append(new_word)
+                output_words.append(new_word)
+
+            while base_order_idx < len(base_words_order):
+                skipped_id = base_words_order[base_order_idx]
+                base_order_idx += 1
+                if skipped_id not in seen_word_ids:
+                    seen_word_ids.add(skipped_id)
+                    skipped_orig = base_words[skipped_id]
+                    skipped_copy = dict(skipped_orig)
+                    skipped_copy["t"] = ""
+                    skipped_copy["b"] = []
+                    skipped_copy.pop("c", None)
+                    output_words.append(skipped_copy)
+
+            line_copy = dict(base_line)
+            submitted_line_box = _valid_box(submitted_line.get("b"))
+            if submitted_line_box is not None:
+                _validate_page_bounds(
+                    submitted_line_box,
+                    width=page_width,
+                    height=page_height,
+                    label=f"Line {line_id}",
+                )
+                line_copy["b"] = [round(c) for c in submitted_line_box]
+
+            _assign_added_word_boxes(
+                line=line_copy,
+                words=output_words,
+                additions=additions,
+                page_width=page_width,
+                page_height=page_height,
+                warnings=warnings,
+            )
+            line_copy["words"] = output_words
+            output_lines.append(line_copy)
+
+        else:
+            submitted_line_box = _valid_box(submitted_line.get("b"))
+            if submitted_line_box is not None:
+                _validate_page_bounds(
+                    submitted_line_box,
+                    width=page_width,
+                    height=page_height,
+                    label=f"Line {line_id}",
+                )
+                line_box = [round(c) for c in submitted_line_box]
+            else:
+                prev_box = next(
+                    (
+                        _valid_box(l.get("b"))
+                        for l in reversed(output_lines)
+                        if _valid_box(l.get("b")) is not None
+                    ),
+                    None,
+                )
+                next_box = None
+                for future_line in normalized_submitted_lines[line_index + 1 :]:
+                    if _valid_box(future_line.get("b")) is not None:
+                        next_box = _valid_box(future_line["b"])
+                        break
+                    if future_line["id"] in base_lines:
+                        base_b = _valid_box(base_lines[future_line["id"]].get("b"))
+                        if base_b is not None:
+                            next_box = base_b
+                            break
+
+                line_box = _estimate_added_line_box(
+                    prev_box=prev_box,
+                    next_box=next_box,
+                    page_width=page_width,
+                    page_height=page_height,
+                    line_id=line_id,
+                    warnings=warnings,
+                )
+
+            seen_word_ids = set()
+            additions = []
+            output_words = []
+            next_generated_word_id = 1
+
+            for index, word in enumerate(submitted_words, start=1):
+                if not isinstance(word, dict):
+                    raise RevisionDocumentError(
+                        f"Word {index} in line {line_id} must be an object."
+                    )
+                word_id = word.get("id")
+                text = word.get("t")
+                if not isinstance(text, str):
+                    raise RevisionDocumentError(
+                        f"Word {word_id or index} in line {line_id} must have text."
+                    )
+
+                if isinstance(word_id, str) and word_id:
+                    if word_id in seen_word_ids:
+                        raise RevisionDocumentError(
+                            f"Duplicate word ID {word_id} in line {line_id}."
+                        )
+                else:
+                    while f"w{next_generated_word_id}" in seen_word_ids:
+                        next_generated_word_id += 1
+                    word_id = f"w{next_generated_word_id}"
+                    next_generated_word_id += 1
+
+                seen_word_ids.add(word_id)
+                number = _word_number(word_id)
+                if number is None:
+                    raise RevisionDocumentError(
+                        f"Word IDs in line {line_id} must use the w-number format."
+                    )
+                word_box = word.get("b", [])
+                _validate_box(word_box, f"New word {word_id} in line {line_id}")
+                if word_box != []:
+                    raise RevisionDocumentError(
+                        f"New word {word_id} must have an empty box for realignment."
+                    )
+                if not text.strip():
+                    raise RevisionDocumentError(
+                        f"New word {word_id} cannot be blank; remove the empty "
+                        "placeholder before saving."
+                    )
+                new_word = {key: value for key, value in word.items() if key != "c"}
+                new_word["id"] = word_id
+                new_word["b"] = []
+                additions.append(new_word)
+                output_words.append(new_word)
+
+            new_line_entry = {
+                key: value
+                for key, value in submitted_line.items()
+                if key not in ("words", "b", "id")
+            }
+            new_line_entry["id"] = line_id
+            new_line_entry["b"] = line_box
+            new_line_entry["words"] = output_words
+
+            _assign_added_word_boxes(
+                line=new_line_entry,
+                words=output_words,
+                additions=additions,
+                page_width=page_width,
+                page_height=page_height,
+                warnings=warnings,
+            )
+            output_lines.append(new_line_entry)
 
     output["lines"] = output_lines
     return output, warnings
+
+
+def _estimate_added_line_box(
+    *,
+    prev_box: tuple[float, float, float, float] | None,
+    next_box: tuple[float, float, float, float] | None,
+    page_width: int | None,
+    page_height: int | None,
+    line_id: str,
+    warnings: list[str],
+) -> list[int]:
+    if prev_box is not None and next_box is not None:
+        px0, py0, px1, py1 = prev_box
+        nx0, ny0, nx1, ny1 = next_box
+        x0 = min(px0, nx0)
+        x1 = max(px1, nx1)
+        prev_h = py1 - py0
+        next_h = ny1 - ny0
+        height = max(1, round((prev_h + next_h) / 2))
+        gap = ny0 - py1
+        if gap >= height:
+            y0 = round(py1 + (gap - height) / 2)
+            y1 = y0 + height
+        else:
+            warnings.append(
+                f"Line {line_id}: vertical space between neighboring lines is tight; "
+                "the estimated box may overlap."
+            )
+            y0 = round(py1 + 1)
+            y1 = min(round(ny0 - 1), y0 + height) if ny0 > y0 + 1 else y0 + height
+    elif prev_box is not None:
+        px0, py0, px1, py1 = prev_box
+        height = max(1, round(py1 - py0))
+        spacing = max(2, round(height * 0.25))
+        x0 = px0
+        x1 = px1
+        y0 = py1 + spacing
+        y1 = y0 + height
+        warnings.append(
+            f"Line {line_id}: placed below the preceding line using estimated line height."
+        )
+    elif next_box is not None:
+        nx0, ny0, nx1, ny1 = next_box
+        height = max(1, round(ny1 - ny0))
+        spacing = max(2, round(height * 0.25))
+        x0 = nx0
+        x1 = nx1
+        y1 = max(1, round(ny0 - spacing))
+        y0 = max(0, y1 - height)
+        warnings.append(
+            f"Line {line_id}: placed above the following line using estimated line height."
+        )
+    else:
+        x0 = 0.0
+        y0 = 0.0
+        x1 = float(page_width) if page_width else 500.0
+        height = 30
+        y1 = float(height)
+        warnings.append(
+            f"Line {line_id}: no neighboring line boxes; using default page placement."
+        )
+
+    if page_width is not None:
+        x0 = max(0.0, min(float(x0), float(page_width - 1)))
+        x1 = max(float(x0 + 1), min(float(x1), float(page_width)))
+    else:
+        x0 = max(0.0, float(x0))
+        x1 = max(float(x0 + 1), float(x1))
+
+    if page_height is not None:
+        y0 = max(0.0, min(float(y0), float(page_height - 1)))
+        y1 = max(float(y0 + 1), min(float(y1), float(page_height)))
+    else:
+        y0 = max(0.0, float(y0))
+        y1 = max(float(y0 + 1), float(y1))
+
+    return [round(x0), round(y0), round(x1), round(y1)]
 
 
 def _assign_added_word_boxes(
@@ -251,14 +546,24 @@ def _assign_added_word_boxes(
     line_box = line.get("b")
     line_bounds = _valid_box(line_box)
     if line_bounds is None:
-        raise RevisionDocumentError(
-            f"Cannot place added words because line {line['id']} has no valid box."
-        )
+        word_boxes = [b for w in words if (b := _valid_box(w.get("b"))) is not None]
+        if word_boxes:
+            line_bounds = (
+                min(b[0] for b in word_boxes),
+                min(b[1] for b in word_boxes),
+                max(b[2] for b in word_boxes),
+                max(b[3] for b in word_boxes),
+            )
+            line["b"] = [round(c) for c in line_bounds]
+        else:
+            raise RevisionDocumentError(
+                f"Cannot place added words because line {line['id']} has no valid box."
+            )
     x0, y0, x1, y1 = line_bounds
     if page_width is not None:
-        x1 = min(x1, page_width)
+        x1 = max(x0 + 1, min(x1, page_width))
     if page_height is not None:
-        y1 = min(y1, page_height)
+        y1 = max(y0 + 1, min(y1, page_height))
 
     for index, word in enumerate(words):
         if not any(word is added for added in additions):
@@ -294,7 +599,7 @@ def _assign_added_word_boxes(
             if box is not None
         ]
         heights = [box[3] - box[1] for box in anchor_boxes if box[3] > box[1]]
-        height = max(1, round(sum(heights) / len(heights))) if heights else max(1, y1 - y0)
+        height = max(1, round(sum(heights) / len(heights))) if heights else max(1, round(y1 - y0))
         center_y = (
             sum((box[1] + box[3]) / 2 for box in anchor_boxes) / len(anchor_boxes)
             if anchor_boxes
@@ -347,6 +652,11 @@ def _assign_added_word_boxes(
 
 def _word_number(word_id: str) -> int | None:
     match = _WORD_ID.fullmatch(word_id)
+    return int(match.group(1)) if match else None
+
+
+def _line_number(line_id: str) -> int | None:
+    match = _LINE_ID.fullmatch(line_id)
     return int(match.group(1)) if match else None
 
 
