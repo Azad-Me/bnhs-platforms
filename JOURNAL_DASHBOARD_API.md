@@ -68,7 +68,7 @@ catalog. Adding or changing a role requires a code and migration change.
 | 9 | Show issue page-status totals | `GET /api/volumes/{volume_id}/issues` | **Completed** | Issue summaries include counts for Unverified, Review, and Completed pages; `GET /api/issues/{issue_id}/pages` also returns each page's validated QC state. |
 | 10 | Claim an unverified page before editing | `POST /api/pages/{page_id}/claim` | **Completed** | QC users and Admins can claim eligible pages. A row lock serializes claims; another active claimant receives 409. Claims expire after 30 minutes. |
 | 11 | Load page QC content and scan | `GET /api/pages/{page_id}` | **Completed** | Returns OCR text, the caller's latest draft for QC users (latest revision for Admin/Publisher), nullable revision ID, state, claim state, and a 5-minute authorized scan URL. First-time corrected text is OCR text or empty. |
-| 12 | Save draft corrections and view role-scoped history | Add authenticated draft/revision write and history-read operations, with conflict handling, claim checks, and role-based visibility. | **Not started** | First save creates the first user-authored revision based on the OCR baseline when available, otherwise with no parent. QC users see their own revisions/history plus the read-only OCR baseline; reviewers and auditors see the shared page history. Reviewer/auditor screens have not yet been inspected. |
+| 12 | Save draft corrections and view role-scoped history | `POST /api/pages/{page_id}/revisions` saves structured page data; revision history reads remain future work. | **Partial** | QC users must hold the active page claim and send `base_revision_id` (`null` for the OCR baseline) to detect stale saves. Each save stores an immutable structured JSON revision and parent ID. Existing word boxes are server-owned; new words receive an estimated box and alignment warnings when space is insufficient. |
 | 13 | Submit review and complete/approve a page | Add workflow operations for submitting a page for review and recording a reviewer decision/approval; define allowed transitions and role checks. | **Not started** | QC submission removes the page from the QC user's queue and makes it visible to reviewers and auditors. The reviewer design shows “Send back” and “Commit & publish”; their exact side effects still need confirmation. |
 | 14 | Release or expire page claims | `DELETE /api/pages/{page_id}/claim` | **Completed** | QC users release their own claim; Admins can release any active claim. Release returns a page without a saved draft to `unverified`, or a page with the claimant's draft to `needs_changes`. Expired locks are reclaimed on the next claim attempt. |
 | 15 | Load names and highlighted text | Add `GET /api/pages/{page_id}/names`, returning detected names with type (Species, Person, Reference), review status, confidence, and text offsets/spans for highlighting. | **Not started** | The Names panel shows category/status counts and a Highlighted text view. No name-annotation read API was found. |
@@ -193,6 +193,93 @@ user.
 | Submit a page for review | `POST /api/pages/{page_id}/submit-review` | Validate the QC user's claim and draft, transition the page to `IN_REVIEW`, record the submitted revision/actor/time, release the QC claim, remove it from QC queues, and make it available in reviewer/auditor views. |
 | Reviewer/Admin decision | Authenticated review-decision operation, e.g. send back or commit/publish | Support the visible actions for authorized reviewers and admins; record decision/actor/time and enforce role-based transitions. The Admin prototype exposes “Send back” and “Commit & publish”; exact state transitions, publication effects, and required rationale need product confirmation. |
 | Release/expire claim | `DELETE /api/pages/{page_id}/claim` | Implemented. Expired assignment rows are marked expired when a later claim is attempted. |
+
+### Saving structured page revisions
+
+`GET /api/pages/{page_id}` includes `data.document` for structured OCR or
+revision documents and `data.current_revision_id` for the QC user's current
+base. Load/claim the page before editing. Legacy text-only revisions cannot be
+used as a geometry-aware base and return a conflict until a structured revision
+exists.
+
+Save with `POST /api/pages/{page_id}/revisions` and a QC-user bearer token:
+
+```json
+{
+  "base_revision_id": null,
+  "document": {
+    "page": 12,
+    "width": 1664,
+    "height": 2676,
+    "lines": [
+      {
+        "id": "l1",
+        "b": [210, 340, 1480, 392],
+        "words": [
+          { "id": "w1", "t": "The", "b": [210, 340, 290, 392] },
+          { "id": "w2", "t": "", "b": [] },
+          { "id": "w3", "t": "Great", "b": [] }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The response contains the new `id`, `based_on_revision_id`, complete
+realigned `document`, and `realignment_warnings`. Existing word boxes are
+copied from the base revision, regardless of client-supplied coordinates.
+Existing words with empty text and an empty box are stored as deletion
+tombstones so their IDs are never reused. New words must have a fresh `wN` ID,
+non-empty text, and empty box; their box is estimated from neighboring word
+geometry and the line box. The save requires an active QC claim and
+`in_progress` page state, rejects stale base IDs with `409`, and extends the
+claim lease. Line IDs and line membership are fixed in this first version;
+line insertion/deletion and revision-history reads are not implemented.
+
+## Text editing and realignment implementation steps
+
+The volunteer guide requires corrected text to retain page geometry: unchanged
+words keep their boxes, while replacement words share the box area of the
+words they replace. Implement this with structured, immutable page revisions;
+do not save only a flattened `corrected_text` string.
+
+1. **Identify OCR words.** Each line has its existing stable line `id`; each
+   word now also has an `id` (`w1`, `w2`, ...) assigned in initial reading
+   order within that line. IDs are line-scoped. The words array carries current
+   reading order, so clients and services must not sort by ID. Never reuse an
+   ID within a line's revision history. Re-running OCR can produce different
+   words and IDs, so do not silently replace an OCR baseline referenced by
+   saved revisions; add baseline versioning or explicit reconciliation first.
+2. **Define the edit payload.** The frontend sends the base revision ID and
+   edited line/word data. Unchanged words retain their IDs and boxes. A newly
+   added word gets the next unused line-local ID and an empty box; its array
+   position states where it belongs. A deleted word and deleted line retain
+   their IDs in the incoming edit with an explicit empty-result marker (for
+   example, empty text and no box). Finalize the marker's exact JSON shape in
+   the save API contract. Treat empty results as edit instructions, not as
+   active OCR words; retain prior revisions for history.
+3. **Validate edits.** Confirm the page and base revision belong together,
+   submitted line/word IDs are unique and valid for that base, text is UTF-8,
+   and image coordinates are within the page. Reject stale base revisions as
+   conflicts rather than applying edits over newer work.
+4. **Realign geometry.** Preserve boxes for unchanged words. Replacements
+   inherit the replaced word(s)' combined region, divided among replacement
+   words using text-width estimates. For insertions, estimate width from text
+   metrics and use the line's neighboring word height/vertical placement.
+   Preserve the exact scan; boxes position the searchable text layer, they do
+   not alter printed content. Detect overlaps, missing space, and ambiguous
+   repeated-word matches; return a visible realignment warning for those
+   cases rather than silently claiming precise alignment.
+5. **Save a full revision.** Persist the complete structured edited page,
+   including line IDs, word IDs, text, boxes, order, and any supported review
+   metadata. Link it to the base revision and record author/time. Keep every
+   saved revision immutable so history and review comparisons are reproducible.
+6. **Verify and integrate.** Cover unchanged words, replacements, insertion at
+   line start/middle/end, multiple insertions, deletions, split/merged words,
+   repeated words, deleted/blank lines, invalid IDs/boxes, and stale saves.
+   Confirm the QC reader and the eventual PDF stitcher consume the same
+   structured revision shape before enabling the save API.
 
 ## Progress response contracts
 

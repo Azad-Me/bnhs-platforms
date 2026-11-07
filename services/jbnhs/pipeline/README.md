@@ -22,12 +22,23 @@ ocr/tesseract/V1/i1/p0002.json
 ocr/tesseract/V1/i1/manifest.json
 ```
 
-The `issues` row stores the original master-PDF key and manifest key. Each
-`pages` row stores the rendered JPEG key, OCR JSON key, and page dimensions;
-`page_number` selects the individual page. Images are JPEG-encoded at quality
-90 and uploaded as `image/jpeg`. The original S3 PDF is not changed. New pages
-enter the `unverified` QC state. Reprocessing an issue overwrites the same
-JPEG/OCR keys without resetting existing QC states.
+The master-PDF key is used as the ingestion source and recorded in the S3
+manifest; it is not stored on the `issues` row. The issue row stores the
+manifest key and, when provided, the toned-PDF key. Each `pages` row stores the
+rendered JPEG key, OCR JSON key, and page dimensions; `page_number` selects the
+individual page. Images are JPEG-encoded at quality 90 and uploaded as
+`image/jpeg`. The original S3 PDF is not changed. New pages enter the
+`unverified` QC state. Reprocessing an issue overwrites the same JPEG/OCR keys
+without resetting existing QC states.
+
+Every OCR word has an `id` (`w1`, `w2`, ...) unique within its line. These IDs
+are assigned in initial reading order and are intended to remain stable through
+proofreading revisions; later word order must come from the words array, not
+from sorting IDs. New words receive the next unused ID in their line.
+Because IDs are generated from each OCR result, reprocessing a page with
+existing revisions must not silently replace the revision's OCR baseline or
+change its word identities; baseline versioning/reconciliation is required
+before enabling that workflow.
 
 Install dependencies and the Tesseract executable:
 
@@ -70,6 +81,10 @@ The batch scans `S3_MASTER_PDF_PREFIX` (default `derived/pdf/`) in
 and requires `s3:ListBucket` for that prefix, read access to master PDFs, and
 write access to OCR output keys. OCR settings can be adjusted with `OCR_DPI`,
 `TESSERACT_LANGUAGE`, `TESSERACT_PSM`, and `OCR_CONFIDENCE_THRESHOLD`.
+The command prints flushed progress for database connection, PDF listing,
+downloads, and each page's render/OCR/upload stages, so progress appears while
+long batches are running. In PowerShell, run it directly in the terminal (not
+with output redirected) to see the progress as it is emitted.
 
 Run the pipeline tests with:
 

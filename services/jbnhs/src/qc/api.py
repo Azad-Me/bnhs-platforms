@@ -16,17 +16,23 @@ from ....common.responses import (
     ApiResponse,
     handle_api_exceptions,
 )
-from ....user_management.router import get_current_user
-from .schemas import QCPageRead
+from ....user_management.router import get_current_user, require_role
+from .schemas import PageRevisionRead, QCPageRead, SaveRevisionRequest
 from .service import (
     PageAssetFormatError,
     PageAssetUnavailableError,
     PageNotFoundError,
+    RevisionClaimRequiredError,
+    RevisionConflictError,
+    RevisionDocumentError,
+    RevisionNotEditableError,
     get_qc_page,
+    save_page_revision,
 )
 
 
 router = APIRouter(prefix="/api", tags=["qc"], responses=API_ERROR_RESPONSES)
+_revision_roles = Depends(require_role(AccessLevel.QC_USER))
 
 
 @router.get(
@@ -75,5 +81,53 @@ async def read_qc_page(
                     ),
                 )
         return ApiResponse.success(page)
+    finally:
+        s3_resource.close()
+
+
+@router.post(
+    "/pages/{page_id}/revisions",
+    response_model=ApiResponse[PageRevisionRead],
+    status_code=status.HTTP_201_CREATED,
+)
+@handle_api_exceptions(
+    {
+        PageNotFoundError: ApiExceptionRule(404, lambda error: str(error)),
+        PageAssetUnavailableError: ApiExceptionRule(
+            502, lambda error: str(error)
+        ),
+        PageAssetFormatError: ApiExceptionRule(502, lambda error: str(error)),
+        RevisionClaimRequiredError: ApiExceptionRule(
+            409, lambda error: str(error)
+        ),
+        RevisionConflictError: ApiExceptionRule(
+            409, lambda error: str(error)
+        ),
+        RevisionNotEditableError: ApiExceptionRule(
+            409, lambda error: str(error)
+        ),
+        RevisionDocumentError: ApiExceptionRule(
+            422, lambda error: str(error)
+        ),
+    }
+)
+async def create_page_revision(
+    page_id: int,
+    request: SaveRevisionRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = _revision_roles,
+) -> ApiResponse[PageRevisionRead]:
+    s3_resource = S3Resource()
+    try:
+        result = await save_page_revision(
+            session,
+            page_id=page_id,
+            user=user,
+            base_revision_id=request.base_revision_id,
+            submitted_document=request.document,
+            s3_client=s3_resource.client,
+            bucket=os.environ.get("S3_BUCKET", "bnhs-jbnhs-archive"),
+        )
+        return ApiResponse.success(result)
     finally:
         s3_resource.close()

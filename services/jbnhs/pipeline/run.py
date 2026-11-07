@@ -32,7 +32,14 @@ async def run_pipeline() -> None:
     s3_resource = S3Resource(region_name=region)
     pool = DataBaseConnectionPool()
     try:
+        print(
+            f"Starting JBNHS ingestion from s3://{bucket}/{prefix} "
+            f"({region}; OCR {dpi} DPI, language={language}, PSM={psm}).",
+            flush=True,
+        )
+        print("Checking database connection...", flush=True)
         await pool.ping()
+        print("Database connection ready; listing master PDFs...", flush=True)
         try:
             results = await ingest_all_s3_pdfs(
                 s3_client=s3_resource.client,
@@ -48,16 +55,19 @@ async def run_pipeline() -> None:
             for result in error.completed:
                 _print_result(bucket, result)
             for key, failure in error.failures:
-                print(f"Failed {key}: {failure}")
+                print(f"Failed {key}: {failure!r}", flush=True)
             raise
 
         if not results:
-            print(f"No master PDFs found in s3://{bucket}/{prefix}")
+            print(f"No master PDFs found in s3://{bucket}/{prefix}", flush=True)
             return
 
         for result in results:
             _print_result(bucket, result)
-        print(f"Completed ingestion for {len(results)} master PDFs.")
+        print(
+            f"Completed ingestion for {len(results)} master PDFs.",
+            flush=True,
+        )
     finally:
         try:
             await pool.close()
@@ -69,7 +79,8 @@ def _print_result(bucket: str, result: IngestionResult) -> None:
     print(
         f"Ingested {result.volume_code}/{result.issue_code}: "
         f"{result.page_count} pages; manifest "
-        f"s3://{bucket}/{result.manifest_s3_key}"
+        f"s3://{bucket}/{result.manifest_s3_key}",
+        flush=True,
     )
 
 

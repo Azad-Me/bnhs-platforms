@@ -119,6 +119,7 @@ def build_page_ocr_document(
                 "b": [bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]],
                 "words": [
                     {
+                        "id": f"w{word_number}",
                         "t": word["text"],
                         "b": [
                             word["bbox"]["x1"],
@@ -128,7 +129,10 @@ def build_page_ocr_document(
                         ],
                         "c": word["confidence"],
                     }
-                    for word in line["words"]
+                    for word_number, word in enumerate(
+                        line["words"],
+                        start=1,
+                    )
                 ],
             }
         )
@@ -161,11 +165,20 @@ def classify_page_image(image: Any) -> str:
     return "gray"
 
 
-def _extract_ocr_lines(image: Any, *, language: str, psm: int) -> list[dict[str, Any]]:
+def _extract_ocr_lines(
+    image: Any,
+    *,
+    language: str,
+    psm: int,
+    confidence_threshold: float,
+) -> list[dict[str, Any]]:
     from .process_extraction import extract_ocr_data, group_words_into_lines
 
     words, _ = extract_ocr_data(image, language=language, psm=psm)
-    return group_words_into_lines(words, confidence_threshold=0.6)
+    return group_words_into_lines(
+        words,
+        confidence_threshold=confidence_threshold,
+    )
 
 
 def _page_manifest_entry(
@@ -194,8 +207,6 @@ def _page_manifest_entry(
 async def _save_issue_metadata(
     session: AsyncSession,
     *,
-    bucket: str,
-    master_pdf_s3_key: str,
     toned_pdf_s3_key: str | None,
     volume_code: str,
     issue_code: str,
@@ -226,13 +237,11 @@ async def _save_issue_metadata(
     issue = issue_matches[0] if issue_matches else Issue(
         volume_id=volume.id,
         issue_code=issue_code,
-        master_pdf_s3_key=master_pdf_s3_key,
     )
     if not issue_matches:
         session.add(issue)
         await session.flush()
 
-    issue.master_pdf_s3_key = master_pdf_s3_key
     if toned_pdf_s3_key is not None:
         issue.toned_pdf_s3_key = toned_pdf_s3_key
     issue.manifest_s3_key = manifest_s3_key
@@ -296,10 +305,20 @@ async def ingest_local_pdf(
         if document.page_count == 0:
             raise ValueError(f"The PDF contains no pages: {master_pdf_s3_key}")
 
+        total_pages = document.page_count
+        print(
+            f"Processing {master_pdf_s3_key}: {total_pages} pages.",
+            flush=True,
+        )
         scale = dpi / 72
         matrix = pymupdf.Matrix(scale, scale)
 
         for page_number, pdf_page in enumerate(document, start=1):
+            print(
+                f"  [{volume_code}/{issue_code}] "
+                f"Page {page_number}/{total_pages}: rendering and OCR...",
+                flush=True,
+            )
             pixmap = pdf_page.get_pixmap(
                 matrix=matrix,
                 colorspace=pymupdf.csRGB,
@@ -339,7 +358,12 @@ async def ingest_local_pdf(
                 ContentType="image/jpeg",
             )
 
-            lines = _extract_ocr_lines(image, language=language, psm=psm)
+            lines = _extract_ocr_lines(
+                image,
+                language=language,
+                psm=psm,
+                confidence_threshold=confidence_threshold,
+            )
             page_document = build_page_ocr_document(
                 page_number=page_number,
                 source_file=source_file,
@@ -373,6 +397,12 @@ async def ingest_local_pdf(
                     "ocr_s3_key": page_key,
                 }
             )
+            print(
+                f"  [{volume_code}/{issue_code}] "
+                f"Page {page_number}/{total_pages} complete "
+                f"({len(lines)} lines).",
+                flush=True,
+            )
 
     manifest = {
         "volume": volume_code,
@@ -400,8 +430,6 @@ async def ingest_local_pdf(
         async with session.begin():
             await _save_issue_metadata(
                 session,
-                bucket=bucket,
-                master_pdf_s3_key=master_pdf_s3_key,
                 toned_pdf_s3_key=toned_pdf_s3_key,
                 volume_code=volume_code,
                 issue_code=issue_code,
@@ -467,10 +495,18 @@ async def ingest_all_s3_pdfs(
         bucket=bucket,
         prefix=prefix,
     )
+    print(
+        f"Found {len(keys)} master PDF(s) under s3://{bucket}/{prefix}.",
+        flush=True,
+    )
     completed: list[IngestionResult] = []
     failures: list[tuple[str, Exception]] = []
 
-    for key in keys:
+    for index, key in enumerate(keys, start=1):
+        print(
+            f"[{index}/{len(keys)}] Downloading {key}...",
+            flush=True,
+        )
         try:
             result = await ingest_s3_pdf(
                 s3_client=s3_client,
@@ -484,6 +520,7 @@ async def ingest_all_s3_pdfs(
                 confidence_threshold=confidence_threshold,
             )
         except Exception as error:
+            print(f"Failed {key}: {error!r}", flush=True)
             failures.append((key, error))
         else:
             completed.append(result)

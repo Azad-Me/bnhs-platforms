@@ -10,7 +10,6 @@ from ....common.constant.qc_state_enum import QCState
 class IssueSummary(BaseModel):
     id: int
     issue_code: str
-    master_pdf_s3_key: str | None
     toned_pdf_s3_key: str | None
     manifest_s3_key: str | None
     page_count: int
@@ -39,7 +38,7 @@ class PageRead(BaseModel):
     issue_id: int
     page_number: int
     status: QCState
-    is_check_page: bool
-    current_approved_revision_id: int | None
+    # is_check_page: bool
+    # current_approved_revision_id: int | None
     created_at: datetime
     updated_at: datetime
