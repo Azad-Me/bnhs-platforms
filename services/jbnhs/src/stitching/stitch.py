@@ -1,358 +1,451 @@
+from __future__ import annotations
 
-import argparse
+import asyncio
 import json
+import math
+import os
+import re
+import tempfile
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
+from botocore.exceptions import BotoCoreError, ClientError
 from PIL import Image
-from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from pypdf import PdfReader
+from reportlab.pdfgen.canvas import Canvas
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ....common.constant import QCState, StitchTextMode
+from ....common.models import ApprovedPage, Issue, Page, Revision, Volume
 
 
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
-
+DEFAULT_PAGE_WIDTH_PT = 595.28
+DOWNLOAD_URL_TTL_SECONDS = 900
 FONT_NAME = "JBNHSUnicode"
-FONT_PATHS = [
+FONT_PATHS = (
+    os.environ.get("STITCH_FONT_PATH", ""),
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-]
-
-# PDF points per image pixel at the chosen output width.
-DEFAULT_PAGE_WIDTH_PT = 595.28  # Approximate A4 width
+    "C:/Windows/Fonts/arial.ttf",
+)
 
 
-# --------------------------------------------------
-# 1. Register a Unicode font
-# --------------------------------------------------
+class StitchIssueNotFoundError(LookupError):
+    pass
 
-def register_font():
-    for font_path in FONT_PATHS:
-        if Path(font_path).exists():
-            pdfmetrics.registerFont(
-                TTFont(FONT_NAME, font_path)
-            )
-            return FONT_NAME
 
-    raise FileNotFoundError(
-        "No supported font found. Install DejaVu Sans "
-        "or configure FONT_PATHS for your environment."
+class StitchIssueNotReadyError(ValueError):
+    pass
+
+
+class StitchingError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class StitchResult:
+    issue_id: int
+    page_count: int
+    filename: str
+    download_url: str
+    download_url_expires_in: int
+    text_mode: StitchTextMode
+
+
+@dataclass(frozen=True)
+class _PageAsset:
+    page_number: int
+    image_key: str
+    revision_key: str
+
+
+async def stitch_issue(
+    session: AsyncSession,
+    *,
+    issue_id: int,
+    s3_client: Any,
+    bucket: str,
+    text_mode: StitchTextMode = StitchTextMode.INVISIBLE,
+) -> StitchResult:
+    issue_row = (
+        await session.execute(
+            select(Issue, Volume.volume_code)
+            .join(Volume, Volume.id == Issue.volume_id)
+            .where(Issue.id == issue_id)
+        )
+    ).first()
+    if issue_row is None:
+        raise StitchIssueNotFoundError("Issue not found.")
+    issue, volume_code = issue_row
+
+    page_count = await session.scalar(
+        select(func.count(Page.id)).where(Page.issue_id == issue_id)
     )
+    if not page_count:
+        raise StitchIssueNotReadyError("The issue has no pages to stitch.")
 
-
-# --------------------------------------------------
-# 2. Read and validate OCR JSON
-# --------------------------------------------------
-
-def load_ocr_json(json_path):
-    with open(json_path, "r", encoding="utf-8") as file:
-        data = json.load(file)
-
-    if "lines" not in data:
-        raise ValueError(
-            f"Missing 'lines' in OCR JSON: {json_path}"
+    approved_rows = (
+        await session.execute(
+            select(Page, ApprovedPage, Revision)
+            .join(ApprovedPage, ApprovedPage.page_id == Page.id)
+            .join(
+                Revision,
+                (Revision.id == ApprovedPage.revision_id)
+                & (Revision.page_id == Page.id),
+            )
+            .where(Page.issue_id == issue_id)
+            .order_by(Page.page_number, Page.id)
+        )
+    ).all()
+    if len(approved_rows) != page_count:
+        raise StitchIssueNotReadyError(
+            "Every page in the issue must have an approved revision before stitching."
         )
 
-    return data
-
-
-# --------------------------------------------------
-# 3. Draw one word as invisible searchable text
-# --------------------------------------------------
-
-def draw_invisible_word(pdf, word, image_height, visible=True):
-    x1, y1, x2, y2 = bbox_values(word["bbox"])
-
-    # Clamp the bounding box to the image dimensions
-    x1 = max(0, x1)
-    y1 = max(0, y1)
-    x2 = max(x1, x2)
-    y2 = max(y1, y2)
-
-    box_width = x2 - x1
-    box_height = y2 - y1
-
-    if box_width <= 0 or box_height <= 0:
-        return
-
-    # Convert image coordinates (top-left origin)
-    # to PDF coordinates (bottom-left origin).
-    pdf_x = x1
-    pdf_bottom = image_height - y2
-
-    # Font size is based on OCR box height.
-    font_size = max(1, box_height * 0.8)
-
-    # Font vertical metrics, in PDF points.
-    ascent = pdfmetrics.getAscent("OCRFont") * font_size / 1000
-    descent = pdfmetrics.getDescent("OCRFont") * font_size / 1000
-    text_height = ascent - descent
-
-    # Position baseline using the same vertical alignment logic.
-    pdf_y = (
-        pdf_bottom
-        + (box_height - text_height) / 2
-        - descent
-    )
-
-    # Calculate natural width of this word at the chosen font size.
-    natural_width = pdfmetrics.stringWidth(
-        word["text"],
-        "OCRFont",
-        font_size
-    )
-
-    if natural_width <= 0:
-        return
-
-    # Stretch/compress text to fill the OCR bounding-box width.
-    horizontal_scale = (box_width / natural_width) * 100
-
-    if visible:
-        # Draw bbox for debugging.
-        pdf.setStrokeColorRGB(1, 0, 0)
-        pdf.setLineWidth(0.5)
-        pdf.rect(
-            pdf_x,
-            pdf_bottom,
-            box_width,
-            box_height,
-            stroke=1,
-            fill=0
+    assets: list[_PageAsset] = []
+    for page, approved_page, revision in approved_rows:
+        if (
+            page.status != QCState.COMPLETED.value
+            or page.current_approved_revision_id != approved_page.revision_id
+        ):
+            raise StitchIssueNotReadyError(
+                f"Page {page.page_number} is not in its approved state."
+            )
+        if not page.page_source_file:
+            raise StitchingError(
+                f"Page {page.page_number} has no source scan key."
+            )
+        assets.append(
+            _PageAsset(
+                page_number=page.page_number,
+                image_key=page.page_source_file,
+                revision_key=revision.s3_key,
+            )
         )
 
-        # Visible OCR text, horizontally fitted to bbox.
-        pdf.saveState()
-        pdf.setFillColorRGB(0, 0.55, 0)
-        text_obj = pdf.beginText()
-        text_obj.setTextOrigin(pdf_x, pdf_y)
-        text_obj.setFont("OCRFont", font_size)
-        text_obj.setHorizScale(horizontal_scale)
-        text_obj.textOut(word["text"])
-        pdf.drawText(text_obj)
-        pdf.restoreState()
-
-        confidence = word.get("confidence")
-        if confidence is not None:
-            pdf.setFillColorRGB(0, 0, 1)
-            pdf.setFont("OCRFont", max(1, min(8, box_height * 0.25)))
-            pdf.drawString(
-                pdf_x,
-                max(0, pdf_bottom - 8),
-                str(confidence)
-            )
-
-    else:
-        # Invisible text layer for searching and selection.
-        pdf.saveState()
-
-        text_obj = pdf.beginText()
-        text_obj.setTextOrigin(pdf_x, pdf_y)
-        text_obj.setFont("OCRFont", font_size)
-        text_obj.setHorizScale(horizontal_scale)
-        text_obj.setTextRenderMode(3)
-        text_obj.textOut(word["text"])
-
-        pdf.drawText(text_obj)
-        pdf.restoreState()
-
-
-# --------------------------------------------------
-# 4. Draw a complete page
-# --------------------------------------------------
-
-def add_page(pdf, image_path, ocr_data, font_name):
-    with Image.open(image_path) as image:
-        image_width, image_height = image.size
-
-    # Scale image proportionally to an A4-like page width.
-    scale = DEFAULT_PAGE_WIDTH_PT / image_width
-
-    # page_width = image_width * scale
-    # page_height = image_height * scale
-
-    page_width = image_width
-    page_height = image_height
-
-    pdf.setPageSize((page_width, page_height))
-
-    # Visible layer: original scanned page.
-    pdf.drawImage(
-        ImageReader(str(image_path)),
-        0,
-        0,
-        width=page_width,
-        height=page_height,
-        preserveAspectRatio=False,
-        mask="auto",
+    output_prefix = (
+        os.environ.get("S3_STITCHED_PDF_PREFIX", "derived/searchable-pdf")
+        .strip("/")
+        or "derived/searchable-pdf"
+    )
+    object_key = (
+        f"{output_prefix}/{_safe_key_part(volume_code)}/"
+        f"{_safe_key_part(issue.issue_code)}/{text_mode.value}/"
+        f"issue-{issue_id}-{uuid4().hex}.pdf"
+    )
+    filename = (
+        f"volume-{_safe_key_part(volume_code)}-"
+        f"issue-{_safe_key_part(issue.issue_code)}-{text_mode.value}.pdf"
     )
 
-    # Invisible layer: searchable OCR words.
-    lines = ocr_data["lines"]
+    try:
+        download_url = await asyncio.to_thread(
+            _render_upload_and_sign,
+            s3_client=s3_client,
+            bucket=bucket,
+            assets=assets,
+            object_key=object_key,
+            volume_code=volume_code,
+            issue_code=issue.issue_code,
+            text_mode=text_mode,
+        )
+    except (BotoCoreError, ClientError) as error:
+        raise StitchingError(
+            "Unable to read the approved page assets or store the stitched PDF."
+        ) from error
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise StitchingError(str(error)) from error
 
-    for line in lines:
-        for word in line.get("words", []):
-            draw_invisible_word(
-                pdf=pdf,
-                word=word,
+    return StitchResult(
+        issue_id=issue_id,
+        page_count=len(assets),
+        filename=filename,
+        download_url=download_url,
+        download_url_expires_in=DOWNLOAD_URL_TTL_SECONDS,
+        text_mode=text_mode,
+    )
+
+
+def _render_upload_and_sign(
+    *,
+    s3_client: Any,
+    bucket: str,
+    assets: list[_PageAsset],
+    object_key: str,
+    volume_code: str,
+    issue_code: str,
+    text_mode: StitchTextMode,
+) -> str:
+    with tempfile.TemporaryDirectory(prefix="bnhs-stitch-") as temp_dir:
+        pdf_path = Path(temp_dir) / "stitched.pdf"
+        _render_pdf_to_path(
+            s3_client=s3_client,
+            bucket=bucket,
+            assets=assets,
+            pdf_path=pdf_path,
+            title=f"JBNHS volume {volume_code}, issue {issue_code}",
+            text_mode=text_mode,
+        )
+        with pdf_path.open("rb") as pdf_file:
+            s3_client.upload_fileobj(
+                pdf_file,
+                bucket,
+                object_key,
+                ExtraArgs={
+                    "ContentType": "application/pdf",
+                    "ContentDisposition": (
+                        f'attachment; filename="volume-{_safe_key_part(volume_code)}-'
+                        f'issue-{_safe_key_part(issue_code)}-{text_mode.value}.pdf"'
+                    ),
+                },
+            )
+
+    return s3_client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": object_key},
+        ExpiresIn=DOWNLOAD_URL_TTL_SECONDS,
+    )
+
+
+def render_approved_page_to_path(
+    *,
+    s3_client: Any,
+    bucket: str,
+    page_number: int,
+    image_key: str,
+    revision_key: str,
+    output_path: str | Path,
+    text_mode: StitchTextMode = StitchTextMode.INVISIBLE,
+) -> Path:
+    """Create a local, searchable PDF containing one approved page."""
+    pdf_path = Path(output_path)
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    _render_pdf_to_path(
+        s3_client=s3_client,
+        bucket=bucket,
+        assets=[
+            _PageAsset(
+                page_number=page_number,
+                image_key=image_key,
+                revision_key=revision_key,
+            )
+        ],
+        pdf_path=pdf_path,
+        title=f"JBNHS approved page {page_number}",
+        text_mode=text_mode,
+    )
+    return pdf_path
+
+
+def _render_pdf_to_path(
+    *,
+    s3_client: Any,
+    bucket: str,
+    assets: list[_PageAsset],
+    pdf_path: Path,
+    title: str,
+    text_mode: StitchTextMode,
+) -> None:
+    font_name = _register_font()
+    pdf = Canvas(str(pdf_path), pageCompression=1)
+    pdf.setTitle(title)
+    pdf.setAuthor("BNHS Journal QC")
+
+    for asset in assets:
+        image_bytes = _read_s3_object(
+            s3_client, bucket=bucket, key=asset.image_key
+        )
+        revision_bytes = _read_s3_object(
+            s3_client, bucket=bucket, key=asset.revision_key
+        )
+        try:
+            document = json.loads(revision_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(
+                f"Approved revision for page {asset.page_number} is not valid UTF-8 JSON."
+            ) from error
+        if not isinstance(document, dict) or not isinstance(
+            document.get("lines"), list
+        ):
+            raise ValueError(
+                f"Approved revision for page {asset.page_number} has no lines list."
+            )
+
+        with Image.open(BytesIO(image_bytes)) as image:
+            image.load()
+            image_width, image_height = image.size
+            if image_width <= 0 or image_height <= 0:
+                raise ValueError(
+                    f"Source scan for page {asset.page_number} has invalid dimensions."
+                )
+            scale = DEFAULT_PAGE_WIDTH_PT / image_width
+            page_width_pt = image_width * scale
+            page_height_pt = image_height * scale
+            pdf.setPageSize((page_width_pt, page_height_pt))
+            pdf.drawImage(
+                ImageReader(image),
+                0,
+                0,
+                width=page_width_pt,
+                height=page_height_pt,
+                preserveAspectRatio=False,
+                mask="auto",
+            )
+            _draw_searchable_text(
+                pdf,
+                document["lines"],
+                image_width=image_width,
                 image_height=image_height,
-                # scale=scale,
-                # font_name=font_name,
+                scale=scale,
+                font_name=font_name,
+                page_number=asset.page_number,
+                text_mode=text_mode,
             )
-
-    pdf.showPage()
-
-
-# --------------------------------------------------
-# 5. Find source images
-# --------------------------------------------------
-
-def build_image_index(image_dir):
-    image_extensions = {
-        ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp"
-    }
-
-    index = {}
-
-    for path in Path(image_dir).rglob("*"):
-        if path.is_file() and path.suffix.lower() in image_extensions:
-            # Store all paths for a basename so duplicates can
-            # be detected instead of silently choosing the wrong scan.
-            index.setdefault(path.name, []).append(path)
-
-    return index
-
-
-# --------------------------------------------------
-# 6. Create a multi-page searchable PDF
-# --------------------------------------------------
-
-def bbox_values(bbox):
-    """Accept either {x1,y1,x2,y2} or [x1,y1,x2,y2]."""
-    if isinstance(bbox, dict):
-        return (
-            float(bbox["x1"]),
-            float(bbox["y1"]),
-            float(bbox["x2"]),
-            float(bbox["y2"]),
-        )
-
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        return tuple(float(v) for v in bbox)
-
-    raise ValueError(f"Unsupported bbox format: {bbox}")
-
-
-def create_searchable_pdf(
-    json_dir,
-    image_dir,
-    output_pdf,
-):
-    json_files = sorted(Path(json_dir).rglob("ocr.json"))
-
-    if not json_files:
-        raise FileNotFoundError(
-            f"No ocr.json files found under {json_dir}"
-        )
-
-    image_index = build_image_index(image_dir)
-
-    output_pdf = Path(output_pdf)
-    output_pdf.parent.mkdir(parents=True, exist_ok=True)
-
-    font_name = register_font()
-
-    pdf = canvas.Canvas(str(output_pdf), pageCompression=1)
-
-    processed_pages = 0
-
-    for json_path in json_files:
-        ocr_data = load_ocr_json(json_path)
-
-        source = ocr_data.get("source", {})
-        image_filename = source.get("filename")
-
-        if not image_filename:
-            raise ValueError(
-                f"Missing source.filename in {json_path}"
-            )
-
-        matches = image_index.get(Path(image_filename).name, [])
-
-        if not matches:
-            raise FileNotFoundError(
-                f"Image '{image_filename}' not found in {image_dir}"
-            )
-
-        if len(matches) > 1:
-            raise ValueError(
-                f"Multiple images named '{image_filename}'. "
-                "Remove ambiguity or map this page explicitly."
-            )
-
-        image_path = matches[0]
-
-        print(
-            f"Processing page {ocr_data.get('page_number', '?')}: "
-            f"{image_path.name}"
-        )
-
-        add_page(pdf, image_path, ocr_data, font_name)
-        processed_pages += 1
+            pdf.showPage()
 
     pdf.save()
 
-    # Basic validation: the PDF should have one page per JSON.
-    reader = PdfReader(str(output_pdf))
 
-    if len(reader.pages) != processed_pages:
-        raise RuntimeError(
-            "PDF page count does not match processed OCR pages."
+def _draw_searchable_text(
+    pdf: Canvas,
+    lines: list[Any],
+    *,
+    image_width: int,
+    image_height: int,
+    scale: float,
+    font_name: str,
+    page_number: int,
+    text_mode: StitchTextMode,
+) -> None:
+    for line_index, line in enumerate(lines, start=1):
+        if not isinstance(line, dict) or not isinstance(line.get("words"), list):
+            raise ValueError(
+                f"Line {line_index} on page {page_number} has no words list."
+            )
+        for word_index, word in enumerate(line["words"], start=1):
+            if not isinstance(word, dict) or not isinstance(word.get("t"), str):
+                raise ValueError(
+                    f"Word {word_index} in line {line_index} on page {page_number} is invalid."
+                )
+            text = word["t"]
+            if not text:
+                continue
+            box = _validated_box(
+                word.get("b"),
+                image_width=image_width,
+                image_height=image_height,
+                label=f"Word {word_index} in line {line_index} on page {page_number}",
+            )
+            x0, y0, x1, y1 = box
+            box_width = (x1 - x0) * scale
+            box_height = (y1 - y0) * scale
+            font_size = max(1.0, box_height * 0.8)
+            ascent = pdfmetrics.getAscent(font_name) * font_size / 1000
+            descent = pdfmetrics.getDescent(font_name) * font_size / 1000
+            text_height = ascent - descent
+            pdf_x = x0 * scale
+            pdf_bottom = (image_height - y1) * scale
+            baseline = pdf_bottom + (box_height - text_height) / 2 - descent
+            natural_width = pdfmetrics.stringWidth(text, font_name, font_size)
+            if natural_width <= 0:
+                continue
+
+            text_object = pdf.beginText()
+            text_object.setTextOrigin(pdf_x, baseline)
+            text_object.setFont(font_name, font_size)
+            text_object.setHorizScale((box_width / natural_width) * 100)
+            text_object.setTextRenderMode(
+                0 if text_mode == StitchTextMode.VISIBLE else 3
+            )
+            text_object.textOut(text)
+            if text_mode == StitchTextMode.VISIBLE:
+                pdf.saveState()
+                pdf.setStrokeColorRGB(0.9, 0.1, 0.1)
+                pdf.setLineWidth(0.5)
+                pdf.rect(
+                    x0 * scale,
+                    pdf_bottom,
+                    box_width,
+                    box_height,
+                    stroke=1,
+                    fill=0,
+                )
+                pdf.setFillColorRGB(0, 0.55, 0)
+                pdf.drawText(text_object)
+                confidence = word.get("c")
+                if isinstance(confidence, (int, float)) and not isinstance(
+                    confidence, bool
+                ):
+                    pdf.setFillColorRGB(0, 0.1, 0.9)
+                    pdf.setFont(font_name, max(1, min(8, box_height * 0.25)))
+                    pdf.drawString(
+                        x0 * scale,
+                        max(0, pdf_bottom - 7),
+                        str(confidence),
+                    )
+                pdf.restoreState()
+            else:
+                pdf.drawText(text_object)
+
+
+def _validated_box(
+    value: Any,
+    *,
+    image_width: int,
+    image_height: int,
+    label: str,
+) -> tuple[float, float, float, float]:
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or any(
+            not isinstance(coordinate, (int, float))
+            or isinstance(coordinate, bool)
+            or not math.isfinite(coordinate)
+            for coordinate in value
         )
+    ):
+        raise ValueError(f"{label} has no valid bounding box.")
+    x0, y0, x1, y1 = (float(coordinate) for coordinate in value)
+    if (
+        x0 < 0
+        or y0 < 0
+        or x1 <= x0
+        or y1 <= y0
+        or x1 > image_width
+        or y1 > image_height
+    ):
+        raise ValueError(f"{label} bounding box is outside the source scan.")
+    return x0, y0, x1, y1
 
-    print("\nSearchable PDF created.")
-    print("Pages:", len(reader.pages))
-    print("Output:", output_pdf.resolve())
 
-    # Verify that the PDF has an extractable text layer.
-    extracted_text = "\n".join(
-        page.extract_text() or "" for page in reader.pages
+def _read_s3_object(s3_client: Any, *, bucket: str, key: str) -> bytes:
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    body = response["Body"]
+    try:
+        return body.read()
+    finally:
+        body.close()
+
+
+def _register_font() -> str:
+    if FONT_NAME in pdfmetrics.getRegisteredFontNames():
+        return FONT_NAME
+    for font_path in FONT_PATHS:
+        if font_path and Path(font_path).is_file():
+            pdfmetrics.registerFont(TTFont(FONT_NAME, font_path))
+            return FONT_NAME
+    raise FileNotFoundError(
+        "No Unicode font was found. Set STITCH_FONT_PATH or install DejaVu Sans."
     )
 
-    print("Extracted text characters:", len(extracted_text))
-    print("Text-layer check:", "PASS" if extracted_text.strip() else "FAIL")
 
-    return output_pdf
-
-
-def bbox_values(bbox):
-    """Accept either {x1,y1,x2,y2} or [x1,y1,x2,y2]."""
-    if isinstance(bbox, dict):
-        return (
-            float(bbox["x1"]),
-            float(bbox["y1"]),
-            float(bbox["x2"]),
-            float(bbox["y2"]),
-        )
-
-    if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
-        return tuple(float(v) for v in bbox)
-
-    raise ValueError(f"Unsupported bbox format: {bbox}")
-# --------------------------------------------------
-# 7. Command-line entry point
-# --------------------------------------------------
-
-def main():
-    create_searchable_pdf(
-        json_dir="/content/fresh_tess_output",
-        image_dir="/content/JBNHS",
-        output_pdf="./searchable_pdf_debug_v5_i3.pdf"
-    )
-
-
-if __name__ == "__main__":
-    main()
+def _safe_key_part(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip(".-")
+    return safe or "unknown"

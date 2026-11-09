@@ -29,6 +29,24 @@ in `services/common/models/`.
 The page response includes page dimensions, QC status, and the source/OCR S3
 keys for use by the QC client. Each issue summary includes its source PDF S3 key.
 
+## Check one approved page as a searchable PDF
+
+From the repository root, run the standalone utility with the database page ID.
+It reads the page's current approved revision and source scan from S3, then
+writes a one-page PDF locally without changing either source asset:
+
+```powershell
+python -m services.jbnhs.src.stitching.stitch_page 10042 --output .\approved-page-10042.pdf
+```
+
+Pass `--text-mode visible` to draw the text and red word boxes over the scan for
+alignment checking. The default `--text-mode invisible` creates the searchable
+invisible text layer.
+
+The database, AWS/S3, bucket, and font settings use the same environment
+configuration as the API. If `--output` is omitted, the PDF is written to
+`approved-page-<page_id>.pdf` in the current directory.
+
 ## API container
 
 Build the API image from the repository root and pass environment settings at

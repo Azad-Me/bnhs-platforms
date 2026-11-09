@@ -5,17 +5,12 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....common.constant.qc_state_enum import QCState
+from ....common.constant import AssignmentStatus, QCState
 from ....common.models import Assignment, Page, Revision, User
 from .schemas import PageClaimRead
 
 
 CLAIM_TTL = timedelta(minutes=30)
-ACTIVE_ASSIGNMENT_STATUS = "active"
-_RELEASED_ASSIGNMENT = "released"
-_EXPIRED_ASSIGNMENT = "expired"
-
-
 class PageNotFoundError(LookupError):
     pass
 
@@ -64,14 +59,14 @@ async def claim_page(
             if active_assignment is None:
                 active_assignment = assignment
         else:
-            assignment.status = _EXPIRED_ASSIGNMENT
+            assignment.status = AssignmentStatus.EXPIRED.value
 
     expires_at = now + CLAIM_TTL
     if active_assignment is None:
         active_assignment = Assignment(
             page_id=page.id,
             user_id=user.id,
-            status=ACTIVE_ASSIGNMENT_STATUS,
+            status=AssignmentStatus.ACTIVE.value,
         )
         session.add(active_assignment)
 
@@ -108,7 +103,7 @@ async def release_page_claim(
     if assignment is None:
         raise PageClaimRequiredError("There is no active claim to release.")
 
-    assignment.status = _RELEASED_ASSIGNMENT
+    assignment.status = AssignmentStatus.RELEASED.value
     if QCState(page.status) == QCState.IN_PROGRESS:
         has_draft = await session.scalar(
             select(Revision.id)
@@ -142,7 +137,7 @@ async def _active_assignments(
         select(Assignment)
         .where(
             Assignment.page_id == page_id,
-            Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+            Assignment.status == AssignmentStatus.ACTIVE.value,
         )
         .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
         .with_for_update()

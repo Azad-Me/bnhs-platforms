@@ -5,8 +5,13 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....common.constant.access_level_enum import AccessLevel
-from ....common.constant.qc_state_enum import QCState
+from ....common.constant import (
+    AccessLevel,
+    AssignmentStatus,
+    QCState,
+    ReviewAction,
+    ReviewDecision,
+)
 from ....common.models import (
     ApprovedPage,
     Assignment,
@@ -15,7 +20,6 @@ from ....common.models import (
     Review,
     User,
 )
-from ..assignments.service import ACTIVE_ASSIGNMENT_STATUS
 from .schemas import PageReviewActionRead
 
 
@@ -45,11 +49,7 @@ async def submit_page_for_review(
     page_id: int,
     user: User,
 ) -> PageReviewActionRead:
-    if _role(user) != AccessLevel.QC_USER.value:
-        raise WorkflowAccessDeniedError(
-            "Only QC users can submit pages for review."
-        )
-
+    
     page = await _lock_page(session, page_id)
     if QCState(page.status) != QCState.IN_PROGRESS:
         raise WorkflowStateConflictError(
@@ -62,7 +62,7 @@ async def submit_page_for_review(
         .where(
             Assignment.page_id == page_id,
             Assignment.user_id == user.id,
-            Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+            Assignment.status == AssignmentStatus.ACTIVE.value,
             Assignment.lock_expires_at > now,
         )
         .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
@@ -90,14 +90,14 @@ async def submit_page_for_review(
 
     page.status = QCState.IN_REVIEW.value
     page.updated_at = now
-    assignment.status = "released"
+    assignment.status = AssignmentStatus.RELEASED.value
     assignment.lock_expires_at = None
     assignment.updated_at = now
     session.add(
         Review(
             revision_id=revision.id,
             reviewer_id=user.id,
-            decision="submitted",
+            decision=ReviewDecision.SUBMITTED.value,
             reviewed_at=now,
         )
     )
@@ -107,7 +107,7 @@ async def submit_page_for_review(
         status=QCState.IN_REVIEW,
         revision_id=revision.id,
         actor_id=user.id,
-        decision="submitted",
+        decision=ReviewDecision.SUBMITTED,
         note=None,
         acted_at=now,
     )
@@ -118,7 +118,7 @@ async def decide_page_review(
     *,
     page_id: int,
     user: User,
-    decision: str,
+    decision: ReviewAction,
     note: str | None,
 ) -> PageReviewActionRead:
     if _role(user) not in {
@@ -128,9 +128,9 @@ async def decide_page_review(
         raise WorkflowAccessDeniedError(
             "Only Admins and Publishers can decide page reviews."
         )
-    if decision not in {"send_back", "approve"}:
+    if decision not in {ReviewAction.SEND_BACK, ReviewAction.APPROVE}:
         raise WorkflowStateConflictError("Unsupported review decision.")
-    if decision == "send_back" and not (note or "").strip():
+    if decision == ReviewAction.SEND_BACK and not (note or "").strip():
         raise WorkflowStateConflictError(
             "A non-empty note is required when sending back."
         )
@@ -146,7 +146,7 @@ async def decide_page_review(
         .join(Revision, Review.revision_id == Revision.id)
         .where(
             Revision.page_id == page_id,
-            Review.decision == "submitted",
+            Review.decision == ReviewDecision.SUBMITTED.value,
         )
         .order_by(Review.reviewed_at.desc(), Review.id.desc())
         .limit(1)
@@ -158,30 +158,34 @@ async def decide_page_review(
         )
 
     now = datetime.now(timezone.utc)
-    stored_decision = "sent_back" if decision == "send_back" else "approved"
+    stored_decision = (
+        ReviewDecision.SENT_BACK
+        if decision == ReviewAction.SEND_BACK
+        else ReviewDecision.APPROVED
+    )
     session.add(
         Review(
             revision_id=submission.revision_id,
             reviewer_id=user.id,
-            decision=stored_decision,
+            decision=stored_decision.value,
             note=note,
             reviewed_at=now,
         )
     )
 
-    if decision == "send_back":
+    if decision == ReviewAction.SEND_BACK:
         page.status = QCState.NEEDS_CHANGES.value
         page.updated_at = now
         assignments = await session.scalars(
             select(Assignment)
             .where(
                 Assignment.page_id == page_id,
-                Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+                Assignment.status == AssignmentStatus.ACTIVE.value,
             )
             .with_for_update()
         )
         for assignment in assignments:
-            assignment.status = "released"
+            assignment.status = AssignmentStatus.RELEASED.value
             assignment.lock_expires_at = None
             assignment.updated_at = now
     else:

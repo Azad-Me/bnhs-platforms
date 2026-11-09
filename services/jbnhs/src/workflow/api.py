@@ -30,7 +30,7 @@ router = APIRouter(
     tags=["page workflow"],
     responses=API_ERROR_RESPONSES,
 )
-_submit_roles = Depends(require_role(AccessLevel.QC_USER))
+_submit_roles = Depends(require_role(AccessLevel.QC_USER,AccessLevel.PUBLISHER, AccessLevel.ADMIN))
 _review_roles = Depends(
     require_role(AccessLevel.ADMIN, AccessLevel.PUBLISHER)
 )
@@ -38,7 +38,7 @@ _review_roles = Depends(
 
 @router.post(
     "/pages/{page_id}/submit-review",
-    response_model=ApiResponse[PageReviewActionRead],
+    response_model=ApiResponse[PageReviewActionRead], 
 )
 @handle_api_exceptions(
     {

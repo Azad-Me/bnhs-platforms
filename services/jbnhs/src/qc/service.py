@@ -9,9 +9,8 @@ from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.common.constant import AccessLevel, QCState, FilePathsEnum
+from services.common.constant import AssignmentStatus, QCState, FilePathsEnum
 from services.common.models import Assignment, Issue, Page, Revision, User, Volume
-from ..assignments.service import ACTIVE_ASSIGNMENT_STATUS
 from .realignment import (
     RevisionDocumentError,
     normalize_ocr_document,
@@ -182,7 +181,7 @@ async def save_page_revision(
         .where(
             Assignment.page_id == page_id,
             Assignment.user_id == user.id,
-            Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+            Assignment.status == AssignmentStatus.ACTIVE.value,
             Assignment.lock_expires_at > now,
         )
         .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())
@@ -288,7 +287,7 @@ async def _get_claim_state(
         select(Assignment)
         .where(
             Assignment.page_id == page_id,
-            Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+            Assignment.status == AssignmentStatus.ACTIVE.value,
             Assignment.lock_expires_at > now,
         )
         .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())

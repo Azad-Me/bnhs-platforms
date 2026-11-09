@@ -8,9 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ....common.constant import AccessLevel, QCState
+from ....common.constant import (
+    AccessLevel,
+    AssignmentStatus,
+    QCState,
+    ReviewDecision,
+)
 from ....common.models import Assignment, Page, Revision, Review, User
-from ..assignments.service import ACTIVE_ASSIGNMENT_STATUS
 from .schemas import (
     RevisionComparisonRead,
     RevisionDocumentRead,
@@ -63,7 +67,13 @@ async def list_page_revisions(
             .options(selectinload(Review.reviewer))
             .where(
                 Revision.page_id == page_id,
-                Review.decision.in_(("submitted", "sent_back", "approved")),
+                Review.decision.in_(
+                    (
+                        ReviewDecision.SUBMITTED.value,
+                        ReviewDecision.SENT_BACK.value,
+                        ReviewDecision.APPROVED.value,
+                    )
+                ),
             )
             .order_by(Review.reviewed_at, Review.id)
         )
@@ -241,7 +251,7 @@ async def _authorized_page(
             select(Assignment)
             .where(
                 Assignment.page_id == page_id,
-                Assignment.status == ACTIVE_ASSIGNMENT_STATUS,
+                Assignment.status == AssignmentStatus.ACTIVE.value,
                 Assignment.lock_expires_at > now,
             )
             .order_by(Assignment.assigned_at.desc(), Assignment.id.desc())

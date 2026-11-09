@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, model_validator
 
-from ....common.constant.qc_state_enum import QCState
+from ....common.constant import QCState, ReviewAction, ReviewDecision
 
 
 class ReviewDecisionRequest(BaseModel):
-    decision: Literal["send_back", "approve"]
+    decision: ReviewAction
     note: str | None = None
 
     @model_validator(mode="after")
     def require_send_back_note(self) -> ReviewDecisionRequest:
-        if self.decision == "send_back" and not (self.note or "").strip():
+        if self.decision == ReviewAction.SEND_BACK and not (self.note or "").strip():
             raise ValueError("A non-empty note is required when sending back.")
         if self.note is not None:
             self.note = self.note.strip() or None
@@ -26,6 +25,6 @@ class PageReviewActionRead(BaseModel):
     status: QCState
     revision_id: int
     actor_id: int
-    decision: Literal["submitted", "sent_back", "approved"]
+    decision: ReviewDecision
     note: str | None
     acted_at: datetime

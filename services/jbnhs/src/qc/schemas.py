@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from ....common.constant.qc_state_enum import QCState
+from ....common.constant import QCState, ReviewDecision
 
 
 class PageClaimState(BaseModel):
@@ -48,7 +48,7 @@ class PageRevisionRead(BaseModel):
 
 
 class RevisionReviewEvent(BaseModel):
-    decision: Literal["submitted", "sent_back", "approved"]
+    decision: ReviewDecision
     actor_id: int
     actor_name: str
     note: str | None
