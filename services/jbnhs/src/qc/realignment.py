@@ -565,6 +565,44 @@ def _assign_added_word_boxes(
     if page_height is not None:
         y1 = max(y0 + 1, min(y1, page_height))
 
+    added_ids = {id(word) for word in additions}
+    existing_boxes = [
+        (word, box)
+        for word in words
+        if id(word) not in added_ids
+        and word.get("t")
+        and (box := _valid_box(word.get("b"))) is not None
+    ]
+    existing_heights = sorted(
+        box[3] - box[1]
+        for _, box in existing_boxes
+        if box[3] > box[1]
+    )
+    typical_height = (
+        existing_heights[len(existing_heights) // 2]
+        if existing_heights
+        else max(1.0, y1 - y0)
+    )
+    # Lines may contain isolated elements (such as a page number) far from
+    # the text. Exclude those layout gaps from the single-space estimate.
+    max_word_gap = max(2.0, typical_height * 2)
+    existing_gaps = sorted(
+        gap
+        for (_, previous_box), (_, following_box) in zip(
+            existing_boxes, existing_boxes[1:]
+        )
+        if 0 < (gap := following_box[0] - previous_box[2]) <= max_word_gap
+    )
+    if existing_gaps:
+        middle = len(existing_gaps) // 2
+        word_gap = (
+            existing_gaps[middle]
+            if len(existing_gaps) % 2
+            else (existing_gaps[middle - 1] + existing_gaps[middle]) / 2
+        )
+    else:
+        word_gap = max(1.0, typical_height * 0.2)
+
     for index, word in enumerate(words):
         if not any(word is added for added in additions):
             continue
@@ -606,7 +644,7 @@ def _assign_added_word_boxes(
             else (y0 + y1) / 2
         )
         char_widths = [
-            (box[2] - box[0]) / max(len(anchor["t"]), 1)
+            (box[2] - box[0]) / _text_width_units(anchor["t"])
             for anchor, box in (
                 (previous, previous_box),
                 (following, following_box),
@@ -618,27 +656,47 @@ def _assign_added_word_boxes(
             if char_widths
             else max(1.0, (x1 - x0) / max(len(word["t"]) * 8, 1))
         )
-        estimated_width = max(1, math.ceil(len(word["t"]) * average_char_width))
-        left = previous_box[2] if previous_box else x0
-        right = following_box[0] if following_box else x1
-        available_width = right - left
-        if available_width <= 0:
-            warnings.append(
-                f"{line['id']}/{word['id']}: no horizontal gap; the estimated "
-                "box may overlap a neighboring word."
-            )
-            box_x0 = max(x0, min(left, x1 - 1))
-            box_width = min(estimated_width, max(1, x1 - box_x0))
-        elif estimated_width > available_width:
-            warnings.append(
-                f"{line['id']}/{word['id']}: the estimated text width exceeds "
-                "the available gap; box width was limited to the gap."
-            )
-            box_x0 = left
-            box_width = available_width
-        else:
+        estimated_width = max(
+            1,
+            math.ceil(_text_width_units(word["t"]) * average_char_width),
+        )
+        left = previous_box[2] + word_gap if previous_box else x0
+        if following_box is None:
+            # The current line box ends at the last OCR word, so it is not a
+            # right-hand limit for an added word at the end of the line. Keep
+            # the normal word gap after its preceding word.
             box_x0 = left
             box_width = estimated_width
+        else:
+            right = following_box[0] - word_gap
+            available_width = right - left
+            if available_width <= 0:
+                warnings.append(
+                    f"{line['id']}/{word['id']}: no horizontal gap; the estimated "
+                    "box may overlap a neighboring word."
+                )
+                box_x0 = max(x0, min(left, right - 1))
+                box_width = estimated_width
+            elif estimated_width > available_width:
+                warnings.append(
+                    f"{line['id']}/{word['id']}: the estimated text width exceeds "
+                    "the available gap; box width was limited to the gap."
+                )
+                box_x0 = left
+                box_width = available_width
+            else:
+                box_x0 = left
+                box_width = estimated_width
+
+        if page_width is not None:
+            if box_x0 >= page_width:
+                box_x0 = max(0, page_width - 1)
+            if box_x0 + box_width > page_width:
+                warnings.append(
+                    f"{line['id']}/{word['id']}: the estimated box extends beyond "
+                    "the page and was clipped to the page edge."
+                )
+                box_width = max(1, page_width - box_x0)
 
         box_y0 = max(y0, min(round(center_y - height / 2), y1 - 1))
         box_y1 = min(y1, box_y0 + height)
@@ -648,6 +706,45 @@ def _assign_added_word_boxes(
             round(box_x0 + box_width),
             round(box_y1),
         ]
+
+    placed_boxes = [
+        box
+        for word in words
+        if (box := _valid_box(word.get("b"))) is not None
+    ]
+    if placed_boxes:
+        expanded = [
+            min(x0, *(box[0] for box in placed_boxes)),
+            min(y0, *(box[1] for box in placed_boxes)),
+            max(x1, *(box[2] for box in placed_boxes)),
+            max(y1, *(box[3] for box in placed_boxes)),
+        ]
+        if page_width is not None:
+            expanded[2] = min(expanded[2], page_width)
+        if page_height is not None:
+            expanded[3] = min(expanded[3], page_height)
+        line["b"] = [round(coordinate) for coordinate in expanded]
+
+
+def _text_width_units(text: str) -> float:
+    """Estimate proportional-font width in em units for added OCR words."""
+    narrow = "ilI.,'`!:;|"
+    wide = "mwMW@%&"
+    units = 0.0
+    for character in text:
+        if character.isspace():
+            units += 0.3
+        elif character in narrow:
+            units += 0.3
+        elif character in wide:
+            units += 0.85
+        elif character.isupper():
+            units += 0.66
+        elif character.isdigit():
+            units += 0.56
+        else:
+            units += 0.52
+    return max(units, 0.3)
 
 
 def _word_number(word_id: str) -> int | None:

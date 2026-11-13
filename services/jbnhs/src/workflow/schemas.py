@@ -20,6 +20,17 @@ class ReviewDecisionRequest(BaseModel):
         return self
 
 
+class ReturnApprovedPageRequest(BaseModel):
+    note: str
+
+    @model_validator(mode="after")
+    def require_note(self) -> ReturnApprovedPageRequest:
+        self.note = self.note.strip()
+        if not self.note:
+            raise ValueError("A non-empty note is required when returning an approved page.")
+        return self
+
+
 class PageReviewActionRead(BaseModel):
     page_id: int
     status: QCState

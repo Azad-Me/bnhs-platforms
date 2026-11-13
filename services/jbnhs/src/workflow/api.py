@@ -13,7 +13,11 @@ from ....common.responses import (
     handle_api_exceptions,
 )
 from ....user_management.router import require_role
-from .schemas import PageReviewActionRead, ReviewDecisionRequest
+from .schemas import (
+    PageReviewActionRead,
+    ReturnApprovedPageRequest,
+    ReviewDecisionRequest,
+)
 from .service import (
     PageNotFoundError,
     WorkflowAccessDeniedError,
@@ -21,6 +25,7 @@ from .service import (
     WorkflowDraftRequiredError,
     WorkflowStateConflictError,
     decide_page_review,
+    return_approved_page_to_queue,
     submit_page_for_review,
 )
 
@@ -96,6 +101,36 @@ async def review_page(
         page_id=page_id,
         user=user,
         decision=request.decision,
+        note=request.note,
+    )
+    return ApiResponse.success(result)
+
+
+@router.post(
+    "/pages/{page_id}/return-to-queue",
+    response_model=ApiResponse[PageReviewActionRead],
+)
+@handle_api_exceptions(
+    {
+        PageNotFoundError: ApiExceptionRule(404, lambda error: str(error)),
+        WorkflowAccessDeniedError: ApiExceptionRule(
+            403, lambda error: str(error)
+        ),
+        WorkflowStateConflictError: ApiExceptionRule(
+            409, lambda error: str(error)
+        ),
+    }
+)
+async def return_approved_page(
+    page_id: int,
+    request: ReturnApprovedPageRequest,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = _review_roles,
+) -> ApiResponse[PageReviewActionRead]:
+    result = await return_approved_page_to_queue(
+        session,
+        page_id=page_id,
+        user=user,
         note=request.note,
     )
     return ApiResponse.success(result)

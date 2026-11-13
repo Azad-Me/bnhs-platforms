@@ -224,6 +224,88 @@ async def decide_page_review(
     )
 
 
+async def return_approved_page_to_queue(
+    session: AsyncSession,
+    *,
+    page_id: int,
+    user: User,
+    note: str,
+) -> PageReviewActionRead:
+    if _role(user) not in {
+        AccessLevel.ADMIN.value,
+        AccessLevel.PUBLISHER.value,
+    }:
+        raise WorkflowAccessDeniedError(
+            "Only Admins and Publishers can return an approved page to the queue."
+        )
+    note = note.strip()
+    if not note:
+        raise WorkflowStateConflictError(
+            "A non-empty note is required when returning an approved page."
+        )
+
+    page = await _lock_page(session, page_id)
+    if (
+        QCState(page.status) != QCState.COMPLETED
+        or page.current_approved_revision_id is None
+    ):
+        raise WorkflowStateConflictError(
+            "Only a currently approved page can be returned to the queue."
+        )
+
+    approved_page = await session.scalar(
+        select(ApprovedPage)
+        .where(
+            ApprovedPage.page_id == page_id,
+            ApprovedPage.revision_id == page.current_approved_revision_id,
+        )
+        .with_for_update()
+    )
+    if approved_page is None:
+        raise WorkflowStateConflictError(
+            "The page has no matching approved-page record."
+        )
+
+    now = datetime.now(timezone.utc)
+    revision_id = page.current_approved_revision_id
+    session.add(
+        Review(
+            revision_id=revision_id,
+            reviewer_id=user.id,
+            decision=ReviewDecision.SENT_BACK.value,
+            note=note,
+            reviewed_at=now,
+        )
+    )
+    page.status = QCState.NEEDS_CHANGES.value
+    page.current_approved_revision_id = None
+    page.updated_at = now
+
+    assignments = await session.scalars(
+        select(Assignment)
+        .where(
+            Assignment.page_id == page_id,
+            Assignment.status == AssignmentStatus.ACTIVE.value,
+        )
+        .with_for_update()
+    )
+    for assignment in assignments:
+        assignment.status = AssignmentStatus.RELEASED.value
+        assignment.lock_expires_at = None
+        assignment.updated_at = now
+
+    await session.flush()
+    return PageReviewActionRead(
+        page_id=page_id,
+        status=QCState.NEEDS_CHANGES,
+        revision_id=revision_id,
+        actor_id=user.id,
+        decision=ReviewDecision.SENT_BACK,
+        note=note,
+        acted_at=now,
+    )
+
+
 async def _lock_page(session: AsyncSession, page_id: int) -> Page:
     page = await session.scalar(
         select(Page).where(Page.id == page_id).with_for_update()

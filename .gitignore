@@ -66,3 +66,4 @@ tests/
 frontend
 !services/jbnhs/pipeline/test_ingest.py
 !services/jbnhs/src/qc/test_realignment.py
+*.json

@@ -72,6 +72,7 @@ catalog. Adding or changing a role requires a code and migration change.
 | 11 | Load page QC content and scan | `GET /api/pages/{page_id}` | **Completed** | Returns OCR text, the caller's latest draft for QC users (latest revision for Admin/Publisher), nullable revision ID, state, claim state, and a 5-minute authorized scan URL. First-time corrected text is OCR text or empty. |
 | 12 | Save draft corrections and view role-scoped history | `POST /api/pages/{page_id}/revisions`, `GET /api/pages/{page_id}/revisions`, revision content and comparison routes. | **Completed** | QC users see only their own revisions and cannot read history while a page is in review/completed or claimed by another user. Admins and Publishers can read the common history. History includes the OCR import baseline and review events when available; revision comparison returns a unified text diff. |
 | 13 | Submit review and complete/approve a page | `POST /api/pages/{page_id}/submit-review` and `POST /api/pages/{page_id}/review`. | **Completed** | QC submission requires an active claim and saved revision, records the actor/time, releases the claim, and moves the page to `in_review`. Admins/Publishers can send it back with a required note (`needs_changes`) or approve/publish it (`completed`), recording the approved revision. |
+| 13a | Return an approved page to the QC queue | `POST /api/pages/{page_id}/return-to-queue` | **Completed** | Admins/Publishers must provide a reason. The API records a `sent_back` review event against the approved revision, clears the current approved revision, and moves the page to `needs_changes` so it can be claimed again. |
 | 14 | Release or expire page claims | `DELETE /api/pages/{page_id}/claim` | **Completed** | QC users release their own claim; Admins can release any active claim. Release returns a page without a saved draft to `unverified`, or a page with the claimant's draft to `needs_changes`. Expired locks are reclaimed on the next claim attempt. |
 | 15 | Load names and highlighted text | Add `GET /api/pages/{page_id}/names`, returning detected names with type (Species, Person, Reference), review status, confidence, and text offsets/spans for highlighting. | **Not started** | The Names panel shows category/status counts and a Highlighted text view. No name-annotation read API was found. |
 | 16 | Review detected names | Add an authenticated operation to accept/update an individual name annotation and a bulk action for “Accept all confident.” | **Not started** | The panel exposes “Accept all confident” and “To check”; no annotation decision APIs were found. Exact per-name actions and confidence threshold need confirmation. |
@@ -393,9 +394,12 @@ to cross-state page reads and the observed editorial/review actions, subject
 to the final product policy. Enforce this using fixed role-specific API
 dependencies and audit state-changing actions.
 
-The implemented “Send back” action requires a reason and returns the page to
-the QC queue as `NEEDS_CHANGES`. “Commit & publish” records an approval and
-the approved revision, transitioning the page to `COMPLETED`. “Revert to
+The implemented “Send back” action requires a reason and returns an in-review
+page to the QC queue as `NEEDS_CHANGES`. `POST /api/pages/{page_id}/return-to-queue`
+also lets Admins/Publishers return an approved page to `NEEDS_CHANGES`, clearing
+its current approval while preserving the audit event. “Commit & publish”
+records an approval and the approved revision, transitioning the page to
+`COMPLETED`. “Revert to
 this,” “Harvest names,” and name-acceptance actions remain unimplemented; their
 effects and the shared-annotation policy still need confirmation. The
 Publisher role is treated as the reviewer/publisher role and shares these

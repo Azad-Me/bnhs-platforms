@@ -266,6 +266,8 @@ def _render_pdf_to_path(
         )
         try:
             document = json.loads(revision_bytes.decode("utf-8"))
+            with open("./revision.json","wb") as f:
+                f.write(revision_bytes)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError(
                 f"Approved revision for page {asset.page_number} is not valid UTF-8 JSON."
