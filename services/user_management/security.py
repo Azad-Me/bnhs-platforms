@@ -46,7 +46,7 @@ def load_auth_settings() -> AuthSettings:
 
     try:
         token_expire_minutes = int(
-            environment.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "30")
+            environment.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60")
         )
     except ValueError as error:
         raise AuthConfigurationError(

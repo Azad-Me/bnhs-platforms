@@ -7,3 +7,6 @@ class QCState(str, Enum):
     IN_REVIEW = "in_review"
     NEEDS_CHANGES = "needs_changes"
     COMPLETED = "completed"
+
+    def __init__(self,arg):
+        self.label = arg

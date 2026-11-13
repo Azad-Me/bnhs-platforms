@@ -10,7 +10,7 @@ from ....common.responses import (
     ApiResponse,
     handle_api_exceptions,
 )
-from ....user_management.router import require_role
+from ....user_management.router import get_current_user, require_role
 from .schemas import PageClaimRead
 from .service import (
     PageClaimedError,
@@ -26,8 +26,8 @@ router = APIRouter(
     prefix="/api",
     tags=["assignments"],
     responses=API_ERROR_RESPONSES,
+    dependencies=[Depends(require_role(AccessLevel.QC_USER, AccessLevel.ADMIN))],
 )
-_claim_roles = Depends(require_role(AccessLevel.QC_USER, AccessLevel.ADMIN))
 
 
 @router.post(
@@ -44,7 +44,7 @@ _claim_roles = Depends(require_role(AccessLevel.QC_USER, AccessLevel.ADMIN))
 async def claim_page(
     page_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = _claim_roles,
+    user: User = Depends(get_current_user),
 ) -> ApiResponse[PageClaimRead]:
     result = await claim_page_service(session, page_id=page_id, user=user)
     return ApiResponse.success(result)
@@ -63,7 +63,7 @@ async def claim_page(
 async def release_claim(
     page_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = _claim_roles,
+    user: User = Depends(get_current_user),
 ) -> ApiResponse[dict[str, str]]:
     await release_page_claim(
         session,

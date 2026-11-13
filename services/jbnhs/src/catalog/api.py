@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ....common.db.dependencies import get_db_session
-from ....common.models import User
 from ....common.responses import (
     API_ERROR_RESPONSES,
     ApiExceptionRule,
@@ -26,13 +25,13 @@ router = APIRouter(
     prefix="/api",
     tags=["JBNHS catalog"],
     responses=API_ERROR_RESPONSES,
+    dependencies=[Depends(get_current_user)],
 )
 
 
 @router.get("/volumes", response_model=ApiResponse[list[VolumeWithIssues]])
 async def list_volumes_with_issues(
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(get_current_user),
     hide_completed_volumes: bool = Query(default=False),
     hide_completed_issues: bool = Query(default=False),
 ) -> ApiResponse[list[VolumeWithIssues]]:
@@ -59,7 +58,6 @@ async def list_volumes_with_issues(
 async def list_issue_pages(
     issue_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(get_current_user),
 ) -> ApiResponse[list[PageRead]]:
     pages = await get_issue_pages(session, issue_id)
     return ApiResponse.success(pages)
@@ -80,7 +78,6 @@ async def list_issue_pages(
 async def list_volume_issues(
     volume_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(get_current_user),
 ) -> ApiResponse[list[IssueSummary]]:
     issues = await get_volume_issues(session, volume_id)
     return ApiResponse.success(issues)
@@ -102,7 +99,6 @@ async def list_volume_issue_pages(
     volume_id: int,
     issue_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(get_current_user),
 ) -> ApiResponse[list[PageRead]]:
     pages = await get_volume_issue_pages(
         session,

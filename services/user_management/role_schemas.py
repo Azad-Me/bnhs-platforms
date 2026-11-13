@@ -1,14 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
+from .admin.role_schemas import RoleRead
 
-from pydantic import BaseModel, ConfigDict
-
-
-class RoleRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    key: str
-    name: str
-    created_at: datetime
-    updated_at: datetime
+__all__ = ["RoleRead"]

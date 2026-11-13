@@ -29,6 +29,7 @@ router = APIRouter(
     prefix="/api",
     tags=["stitching"],
     responses=API_ERROR_RESPONSES,
+    dependencies=[Depends(require_role(AccessLevel.ADMIN, AccessLevel.PUBLISHER))],
 )
 
 
@@ -57,9 +58,6 @@ async def stitch_issue_pdf(
     issue_id: int,
     request: StitchIssueRequest | None = Body(default=None),
     session: AsyncSession = Depends(get_db_session),
-    _: User = Depends(
-        require_role(AccessLevel.ADMIN, AccessLevel.PUBLISHER)
-    ),
 ) -> ApiResponse[StitchIssueRead]:
     s3_resource = S3Resource()
     try:
